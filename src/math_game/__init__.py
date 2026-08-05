@@ -1,0 +1,1 @@
+"""Math game package."""
