@@ -1,8 +1,8 @@
-"""Stable domain contracts shared by generators, modes and adapters.
+"""Stable domain vocabulary shared by generators, modes and adapters.
 
-This module intentionally contains no generator, persistence or UI logic.  It
-only defines vocabulary that must remain comparable across plugins and future
-frontends.
+The contracts in this module intentionally contain no generator, persistence or
+UI logic.  They are the common language used by the future app shell, headless
+mode state machines and tests.
 """
 
 from __future__ import annotations
@@ -20,26 +20,35 @@ class ArithmeticOperation(StrEnum):
 
 
 class AnswerStatus(StrEnum):
-    """Canonical answer status values used by all game modes."""
+    """Canonical answer status values required by the masterplan."""
 
-    UNANSWERED = "unanswered"
     CORRECT = "correct"
-    INCORRECT = "incorrect"
-    SKIPPED = "skipped"
+    WRONG_RESULT = "wrong_result"
+    NO_INPUT = "no_input"
     TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
 
 
 class GameMode(StrEnum):
-    """Known game mode contract names, without implementing mode behavior."""
+    """Target game mode keys.
 
-    PRACTICE = "practice"
-    TIMED = "timed"
-    FIXED_TASKS = "fixed_tasks"
-    MISTAKE_REVIEW = "mistake_review"
+    These are identifiers only.  No mode state machine is implemented in
+    Verification Gate 1A.
+    """
+
+    TIME_ATTACK = "time_attack"
+    TASK_SPRINT = "task_sprint"
+    PERFECT_RUN = "perfect_run"
+    TARGET_HUNT = "target_hunt"
+    PER_TASK_TIMER = "per_task_timer"
+    COMBO = "combo"
 
 
-class ComparisonScope(StrEnum):
-    """Scope in which two runs may be compared."""
+class EndReason(StrEnum):
+    """Standard end reasons for a future GameSessionResult."""
 
-    SAME_DEFINITION = "same_definition"
-    SAME_DEFINITION_AND_MODE = "same_definition_and_mode"
+    COMPLETED = "completed"
+    TIME_LIMIT_REACHED = "time_limit_reached"
+    FIRST_ERROR = "first_error"
+    TARGET_REACHED = "target_reached"
+    ABORTED = "aborted"
