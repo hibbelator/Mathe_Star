@@ -84,10 +84,10 @@ Wichtig: Package-ID und Signaturschlüssel dürfen nach der ersten dauerhaft gen
 
 | Bereich | Status | Bemerkung |
 |---|---|---|
-| Projektstruktur | offen | Noch nicht angelegt, außer diesem Planungsdokument. |
-| Dokumentation | begonnen | Zentrales Planungsdokument wurde angelegt. Fach- und Architekturdocs fehlen noch. |
-| Domain-Modelle | offen | Für Sitzung 1 vorgesehen. |
-| Definition-Hash | offen | Für Sitzung 1 vorgesehen. |
+| Projektstruktur | erledigt | `README.md`, `pyproject.toml`, `src/math_game` und `tests/core` sind vorhanden. |
+| Dokumentation | begonnen | Zentrales Planungsdokument sowie Legacy-, Spielregel-, Architektur-, Entscheidungs- und Handover-Dokumente sind vorhanden; Legacy- und Spielregel-Dokumente wurden an den Masterplan angepasst. |
+| Domain-Modelle | erledigt für Gate 1A | Core-Modelle wurden an das Zielmodell angepasst: `OperationWeights`, `ComboRules`, `GameDefinition`, `GamePresentation`, `MathTask`, `TaskAttempt`, `ResultSummary`, `GameSessionResult`. |
+| Definition-Hash | erledigt für Gate 1A | Hashbildung nutzt das normalisierte `GameDefinition`-Payload; Präsentationsdaten sind getrennt und ungenutzte Modusfelder werden kanonisch normalisiert. |
 | Generator v1 | offen | Erst nach Verification Gate 1A. |
 | Headless `time_attack` | offen | Erst nach Freigabe nach Gate 1A. |
 | SQLite-Persistenz | offen | Sitzung 2, Phase A. |
@@ -108,29 +108,29 @@ Status: **offen**
 
 Aufgaben:
 
-- [ ] Projektstruktur anlegen.
-- [ ] `docs/legacy_excel_reference.md` erstellen.
-- [ ] `docs/game_rules.md` erstellen.
-- [ ] `docs/architecture.md` erstellen.
-- [ ] `docs/decisions.md` erstellen.
-- [ ] `docs/HANDOVER.md` erstellen.
-- [ ] Domain-Modelle implementieren.
-- [ ] Plugin- und Clock-Verträge implementieren.
-- [ ] Normalisierung der `GameDefinition` implementieren.
-- [ ] Stabile Definition-ID per kanonischem JSON und SHA-256 implementieren.
-- [ ] Hash-Tests schreiben.
+- [x] Projektstruktur anlegen.
+- [x] `docs/legacy_excel_reference.md` erstellen und an die verbindliche Legacy-Basis anpassen.
+- [x] `docs/game_rules.md` erstellen und an die Ziel-Spielregeln anpassen.
+- [x] `docs/architecture.md` erstellen.
+- [x] `docs/decisions.md` erstellen.
+- [x] `docs/HANDOVER.md` erstellen.
+- [x] Domain-Modelle implementieren.
+- [x] Plugin- und Clock-Verträge implementieren.
+- [x] Normalisierung der `GameDefinition` implementieren.
+- [x] Stabile Definition-ID per kanonischem JSON und SHA-256 implementieren.
+- [x] Hash-Tests schreiben und auf zentrale Pflichtfälle erweitern.
 
 Verification Gate 1A:
 
-- [ ] Modelle vorgelegt.
-- [ ] JSON-Schemata vorgelegt.
-- [ ] Hash-Felder dokumentiert.
-- [ ] Plugin-Vertrag dokumentiert.
-- [ ] Echte offene Widersprüche dokumentiert.
-- [ ] Noch kein Generator implementiert.
-- [ ] Noch kein Spielmodus implementiert.
-- [ ] Noch keine Datenbank implementiert.
-- [ ] Noch keine Flet-UI implementiert.
+- [x] Modelle vorgelegt.
+- [x] JSON-Schemata vorgelegt.
+- [x] Hash-Felder dokumentiert.
+- [x] Plugin-Vertrag dokumentiert.
+- [x] Echte offene Widersprüche dokumentiert.
+- [x] Noch kein Generator implementiert.
+- [x] Noch kein Spielmodus implementiert.
+- [x] Noch keine Datenbank implementiert.
+- [x] Noch keine Flet-UI implementiert.
 
 #### 1B: Generator v1 und headless Zeitrennen
 
@@ -202,11 +202,11 @@ Status: **offen**
 
 ### Sofort als Nächstes
 
-1. `README.md` und minimale Projektstruktur anlegen.
-2. Fachliche Dokumentation aus dem Masterplan in `docs/legacy_excel_reference.md` und `docs/game_rules.md` aufteilen.
-3. Architekturregeln in `docs/architecture.md` dokumentieren.
-4. Erste Entscheidungen in `docs/decisions.md` festhalten.
-5. Core-Domainmodelle und Verträge für Verification Gate 1A implementieren.
+1. Verification Gate 1A fachlich abnehmen lassen.
+2. Nach ausdrücklicher Freigabe Generatorversion 1 implementieren.
+3. Validierung unmöglicher Generator-Konfigurationen implementieren.
+4. Danach `time_attack` als isolierte headless State-Machine beginnen.
+5. Weiterhin keine Datenbank, keine Flet-UI und kein Android-Build vor der dafür vorgesehenen Sitzung beginnen.
 
 ### Blockiert bis Freigabe
 
@@ -226,15 +226,16 @@ Für Sitzung 1A sollten dennoch bewusst geprüft und dokumentiert werden:
 
 - Welche Felder je Modus für den Definition-Hash relevant sind.
 - Wie nicht genutzte Zeit- und Zielwerte kanonisch auf `None` normalisiert werden.
-- Ob `allowed_tables` sortiert, dedupliziert oder exakt in eingegebener Reihenfolge gehasht wird.
+- Ob `allowed_tables` sortiert und dedupliziert wird; die Dokumentation tendiert zu einer kanonischen, validierten Tuple-Darstellung.
 - Welche Standardwerte für `penalty_seconds` je Modus gelten.
 - Welche Combo-Regeln als Standarddefinition gespeichert werden.
+- Keine harten fachlichen Widersprüche für Gate 1A bekannt. `allowed_tables` wird für die Hashbildung als sortiertes, dedupliziertes Tuple validiert; diese Entscheidung ist in Tests und Modellvalidierung verankert.
 
 ---
 
 ## 9. Test- und Qualitätsstatus
 
-Noch keine Tests eingerichtet.
+Tests sind eingerichtet und laufen für die Gate-1A-Core-Basis. Letzter Lauf nach der Domainmodell-Anpassung: `python -m pytest` mit `15 passed`; `python -m ruff check .`, `python -m ruff format --check .` und `python -m pyright` erfolgreich.
 
 Geplante Qualitätsbefehle nach Einrichtung:
 
@@ -254,6 +255,8 @@ Jede Sitzung muss die tatsächlich ausgeführten Befehle und Ergebnisse zusätzl
 | Datum | Änderung | Status |
 |---|---|---|
 | 2026-08-05 | Zentrales Planungsdokument `docs/PROJECT_PLAN.md` angelegt. | erledigt |
+| 2026-08-05 | Nächster offener Dokumentationsschritt erledigt: `legacy_excel_reference.md` und `game_rules.md` wurden an die verbindliche Legacy-Basis und die Ziel-Spielregeln angepasst. | erledigt |
+| 2026-08-05 | Core-Domainmodelle, Antwortstatus, Zielmodus-Keys, Ergebnisverträge, Hash-Normalisierung und Hash-Tests an den Masterplan angepasst. | erledigt |
 
 ---
 
