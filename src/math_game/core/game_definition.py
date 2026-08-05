@@ -6,8 +6,9 @@ produced.  The definition hash is the stable identity used to compare sessions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import cast
 
 from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.models import DefinitionHash, OperandRange, normalize_for_hash
@@ -34,7 +35,7 @@ class GameDefinition:
     mode: GameMode
     task_count: int | None = None
     duration_seconds: int | None = None
-    metadata: Mapping[str, str] = field(default_factory=dict)
+    metadata: Mapping[str, str] = field(default_factory=lambda: {})
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -52,17 +53,20 @@ class GameDefinition:
     def normalized_payload(self) -> dict[str, object]:
         """Return the normative payload that participates in the definition hash."""
 
-        return normalize_for_hash(
-            {
-                "schema_version": self.schema_version,
-                "identifier": self.identifier,
-                "title": self.title,
-                "operations": self.operations,
-                "mode": self.mode,
-                "task_count": self.task_count,
-                "duration_seconds": self.duration_seconds,
-                "metadata": self.metadata,
-            }
+        return cast(
+            dict[str, object],
+            normalize_for_hash(
+                {
+                    "schema_version": self.schema_version,
+                    "identifier": self.identifier,
+                    "title": self.title,
+                    "operations": self.operations,
+                    "mode": self.mode,
+                    "task_count": self.task_count,
+                    "duration_seconds": self.duration_seconds,
+                    "metadata": self.metadata,
+                }
+            ),
         )
 
     def definition_hash(self) -> DefinitionHash:

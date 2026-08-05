@@ -12,6 +12,7 @@ class Clock(Protocol):
 
     def now(self) -> datetime:
         """Return the current timezone-aware timestamp."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,44 @@
 [project]
 name = "math-game"
 version = "0.1.0"
-description = "Domain contracts for a comparable math game"
-requires-python = ">=3.11"
+description = "Domain contracts for Mathe-Abenteuer, a comparable math practice game"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Mathe-Abenteuer Team" },
+]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.12",
+  "pyright>=1.1",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/math_game"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.ruff]
+target-version = "py313"
+src = ["src", "tests"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.13"
+pythonPlatform = "All"
+typeCheckingMode = "strict"
