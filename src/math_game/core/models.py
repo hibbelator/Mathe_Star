@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
-from typing import Any, Mapping
+from typing import cast
 
 
-def normalize_for_hash(value: Any) -> Any:
+def normalize_for_hash(value: object) -> object:
     """Return a JSON-compatible canonical representation for hashing.
 
     Normalization is deliberately conservative: dictionaries are sorted by key,
@@ -18,25 +19,29 @@ def normalize_for_hash(value: Any) -> Any:
     Python processes and independent from insertion order.
     """
 
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return normalize_for_hash(asdict(value))
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
         return {
-            str(key): normalize_for_hash(value[key])
-            for key in sorted(value, key=lambda item: str(item))
+            str(key): normalize_for_hash(mapping[key])
+            for key in sorted(mapping, key=lambda item: str(item))
         }
     if isinstance(value, tuple):
-        return [normalize_for_hash(item) for item in value]
+        tuple_value = cast(tuple[object, ...], value)
+        return [normalize_for_hash(item) for item in tuple_value]
     if isinstance(value, list):
-        return [normalize_for_hash(item) for item in value]
+        list_value = cast(list[object], value)
+        return [normalize_for_hash(item) for item in list_value]
     if isinstance(value, set | frozenset):
-        return [normalize_for_hash(item) for item in sorted(value, key=repr)]
+        set_value = cast(set[object] | frozenset[object], value)
+        return [normalize_for_hash(item) for item in sorted(set_value, key=repr)]
     return value
 
 
-def canonical_json(value: Any) -> str:
+def canonical_json(value: object) -> str:
     """Serialize a value to the canonical JSON form used for hashes."""
 
     return json.dumps(
@@ -55,7 +60,7 @@ class DefinitionHash:
     value: str
 
     @classmethod
-    def from_payload(cls, payload: Any) -> "DefinitionHash":
+    def from_payload(cls, payload: object) -> DefinitionHash:
         digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
         return cls(algorithm="sha256", value=digest)
 
