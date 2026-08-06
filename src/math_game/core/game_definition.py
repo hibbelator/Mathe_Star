@@ -7,8 +7,10 @@ not participate in the stable definition hash.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Final, cast
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import cast
 
 from math_game.core.contracts import GameMode
 from math_game.core.models import DefinitionHash, normalize_for_hash
@@ -97,114 +99,54 @@ class GamePresentation:
 
 @dataclass(frozen=True, slots=True)
 class GameDefinition:
-    """Immutable, comparable game definition from the masterplan."""
+    """Stable domain contract with a deterministic definition hash."""
 
-    id: str
-    mode_key: GameMode
-    rules_version: int
-    generator_version: int
-    operation_weights: OperationWeights
-    allowed_tables: tuple[int, ...]
-    factor_min: int
-    factor_max: int
-    add_sub_max_result: int
-    missing_positions: tuple[int, ...]
-    total_time_seconds: float | None
-    per_task_time_seconds: float | None
-    task_count: int | None
-    correct_target: int | None
-    penalty_seconds: float
-    combo_rules: ComboRules | None = None
+    identifier: str
+    title: str
+    operations: tuple[OperationDefinition, ...]
+    mode: GameMode
+    task_count: int | None = None
+    duration_seconds: int | None = None
+    metadata: Mapping[str, str] = field(default_factory=lambda: {})
+    schema_version: int = 1
 
     def __post_init__(self) -> None:
-        if self.rules_version <= 0:
-            raise ValueError("rules_version must be positive")
-        if self.generator_version <= 0:
-            raise ValueError("generator_version must be positive")
-        if self.factor_min <= 0:
-            raise ValueError("factor_min must be positive")
-        if self.factor_max < self.factor_min:
-            raise ValueError("factor_max must be greater than or equal to factor_min")
-        if self.add_sub_max_result < 0:
-            raise ValueError("add_sub_max_result must not be negative")
-        if self.penalty_seconds < 0:
-            raise ValueError("penalty_seconds must not be negative")
-        self._validate_optional_positive("total_time_seconds", self.total_time_seconds)
-        self._validate_optional_positive("per_task_time_seconds", self.per_task_time_seconds)
-        self._validate_optional_positive_int("task_count", self.task_count)
-        self._validate_optional_positive_int("correct_target", self.correct_target)
-        if not self.missing_positions:
-            raise ValueError("missing_positions must not be empty")
-        if any(position not in _VALID_MISSING_POSITIONS for position in self.missing_positions):
-            raise ValueError("missing_positions may only contain 1, 2 or 3")
-        if len(set(self.missing_positions)) != len(self.missing_positions):
-            raise ValueError("missing_positions must not contain duplicates")
-        if any(table <= 0 for table in self.allowed_tables):
-            raise ValueError("allowed_tables may only contain positive integers")
-        if len(set(self.allowed_tables)) != len(self.allowed_tables):
-            raise ValueError("allowed_tables must not contain duplicates")
-        if tuple(sorted(self.allowed_tables)) != self.allowed_tables:
-            raise ValueError("allowed_tables must be sorted for canonical comparison")
-        if self.operation_weights.uses_tables() and not self.allowed_tables:
-            raise ValueError("allowed_tables must not be empty for multiplication or division")
-        if self.mode_key is GameMode.PER_TASK_TIMER and self.per_task_time_seconds is None:
-            raise ValueError("per_task_timer requires per_task_time_seconds")
-        if self.mode_key is GameMode.PER_TASK_TIMER and (
-            self.task_count is None and self.total_time_seconds is None
-        ):
-            raise ValueError("per_task_timer requires task_count or total_time_seconds")
-        if self.mode_key is GameMode.TIME_ATTACK and self.total_time_seconds is None:
-            raise ValueError("time_attack requires total_time_seconds")
-        if self.mode_key is GameMode.TASK_SPRINT and self.task_count is None:
-            raise ValueError("task_sprint requires task_count")
-        if self.mode_key is GameMode.TARGET_HUNT and self.correct_target is None:
-            raise ValueError("target_hunt requires correct_target")
-        if self.mode_key is GameMode.COMBO and (
-            self.task_count is None or self.combo_rules is None
-        ):
-            raise ValueError("combo requires task_count and combo_rules")
-        expected_id = self.compute_id()
-        if not self.id:
-            object.__setattr__(self, "id", expected_id)
-        elif self.id != expected_id:
-            raise ValueError("id must match the normalized definition hash")
+        if not self.identifier.strip():
+            raise ValueError("identifier must not be blank")
+        if not self.title.strip():
+            raise ValueError("title must not be blank")
+        if not self.operations:
+            raise ValueError("at least one operation is required")
+        if self.task_count is not None and self.task_count <= 0:
+            raise ValueError("task_count must be positive when set")
+        if self.duration_seconds is not None and self.duration_seconds <= 0:
+            raise ValueError("duration_seconds must be positive when set")
+        if self.schema_version <= 0:
+            raise ValueError("schema_version must be positive")
 
-    @staticmethod
-    def _validate_optional_positive(name: str, value: float | None) -> None:
-        if value is not None and value <= 0:
-            raise ValueError(f"{name} must be positive when set")
-
-    @staticmethod
-    def _validate_optional_positive_int(name: str, value: int | None) -> None:
-        if value is not None and value <= 0:
-            raise ValueError(f"{name} must be positive when set")
+        # ``frozen=True`` alone does not protect a mutable mapping supplied by
+        # callers.  A defensive copy keeps a definition (and therefore its
+        # hash) stable throughout its lifetime.
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
     def normalized_payload(self) -> dict[str, object]:
         """Return the normative payload that participates in the definition hash."""
 
-        payload = {
-            "mode_key": self.mode_key,
-            "rules_version": self.rules_version,
-            "generator_version": self.generator_version,
-            "operation_weights": self.operation_weights,
-            "allowed_tables": self.allowed_tables,
-            "factor_min": self.factor_min,
-            "factor_max": self.factor_max,
-            "add_sub_max_result": self.add_sub_max_result,
-            "missing_positions": self.missing_positions,
-            "total_time_seconds": self._normalized_total_time_seconds(),
-            "per_task_time_seconds": self._normalized_per_task_time_seconds(),
-            "task_count": self._normalized_task_count(),
-            "correct_target": self._normalized_correct_target(),
-            "penalty_seconds": self._normalized_penalty_seconds(),
-            "combo_rules": self._normalized_combo_rules(),
-        }
-        return cast(dict[str, object], normalize_for_hash(payload))
-
-    def compute_id(self) -> str:
-        """Compute the SHA-256 definition id from the normalized payload."""
-
-        return DefinitionHash.from_payload(self.normalized_payload()).value
+        return cast(
+            dict[str, object],
+            normalize_for_hash(
+                {
+                    "schema_version": self.schema_version,
+                    "identifier": self.identifier,
+                    "title": self.title,
+                    "operations": self.operations,
+                    "mode": self.mode,
+                    "task_count": self.task_count,
+                    "duration_seconds": self.duration_seconds,
+                    "metadata": self.metadata,
+                }
+            ),
+        )
 
     def definition_hash(self) -> DefinitionHash:
         """Calculate the stable SHA-256 hash for this definition."""

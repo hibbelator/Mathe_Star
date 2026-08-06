@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime
+from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from typing import cast
 
-from math_game.core.contracts import AnswerStatus, ArithmeticOperation, EndReason
+from math_game.core.contracts import AnswerStatus
 
 
 def normalize_for_hash(value: object) -> object:
@@ -23,7 +22,8 @@ def normalize_for_hash(value: object) -> object:
     """
 
     if is_dataclass(value) and not isinstance(value, type):
-        return normalize_for_hash(asdict(value))
+        field_values = {field.name: getattr(value, field.name) for field in fields(value)}
+        return normalize_for_hash(field_values)
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Mapping):
@@ -41,8 +41,6 @@ def normalize_for_hash(value: object) -> object:
     if isinstance(value, set | frozenset):
         set_value = cast(set[object] | frozenset[object], value)
         return [normalize_for_hash(item) for item in sorted(set_value, key=repr)]
-    if isinstance(value, datetime):
-        return value.isoformat()
     return value
 
 
@@ -112,75 +110,11 @@ class TaskAttempt:
     multiplier: int = 1
     points: int = 0
 
-    def __post_init__(self) -> None:
-        if self.response_time_seconds < 0:
-            raise ValueError("response_time_seconds must not be negative")
-        if self.event_time_monotonic < 0:
-            raise ValueError("event_time_monotonic must not be negative")
-        if self.streak_before < 0 or self.streak_after < 0:
-            raise ValueError("streak values must not be negative")
-        if self.multiplier <= 0:
-            raise ValueError("multiplier must be positive")
-        if self.points < 0:
-            raise ValueError("points must not be negative")
-
-
-@dataclass(frozen=True, slots=True)
-class ResultSummary:
-    """Common summary fields stored for a finished game session."""
-
-    attempt_count: int
-    correct_count: int
-    wrong_count: int
-    no_input_count: int
-    timeout_count: int
-    elapsed_seconds: float
-    penalty_seconds: float
-    effective_seconds: float
-    score: int = 0
-    longest_streak: int = 0
-    highest_combo: int = 0
-
-    def __post_init__(self) -> None:
-        if self.attempt_count != (
-            self.correct_count + self.wrong_count + self.no_input_count + self.timeout_count
-        ):
-            raise ValueError("attempt_count must equal the sum of evaluated answer statuses")
-        for name, value in {
-            "attempt_count": self.attempt_count,
-            "correct_count": self.correct_count,
-            "wrong_count": self.wrong_count,
-            "no_input_count": self.no_input_count,
-            "timeout_count": self.timeout_count,
-            "score": self.score,
-            "longest_streak": self.longest_streak,
-            "highest_combo": self.highest_combo,
-        }.items():
-            if value < 0:
-                raise ValueError(f"{name} must not be negative")
-        for name, value in {
-            "elapsed_seconds": self.elapsed_seconds,
-            "penalty_seconds": self.penalty_seconds,
-            "effective_seconds": self.effective_seconds,
-        }.items():
-            if value < 0:
-                raise ValueError(f"{name} must not be negative")
-
-
-@dataclass(frozen=True, slots=True)
-class GameSessionResult:
-    """Standardized result envelope returned once by a future mode plugin."""
-
-    session_id: str
-    game_definition_id: str
-    mode_key: str
-    started_at_utc: datetime
-    finished_at_utc: datetime
-    end_reason: EndReason
-    summary: ResultSummary
-    attempts: tuple[TaskAttempt, ...]
-    random_seed: int
-    result_schema_version: int = 1
+    task_id: str
+    answer_status: AnswerStatus
+    expected_answer: int | float | str
+    given_answer: int | float | str | None
+    elapsed_ms: int
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():

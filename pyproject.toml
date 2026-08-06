@@ -8,7 +8,12 @@ license = { text = "Proprietary" }
 authors = [
   { name = "Mathe-Abenteuer Team" },
 ]
-dependencies = []
+dependencies = [
+  "flet>=0.28.3,<0.29",
+]
+
+[project.scripts]
+math-game = "math_game.app.flet_app:run"
 
 [dependency-groups]
 dev = [

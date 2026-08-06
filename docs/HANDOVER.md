@@ -1,60 +1,28 @@
-# Handover nach Verification Gate 1A
+# Handover nach Sitzung 3 / Verification Gate 3
 
-## Aktueller Stand
+## In Sitzung 3 umgesetzt
 
-Der nächste größere Schritt wurde erledigt: Die Core-Domainmodelle und Verträge wurden an den verbindlichen Masterplan angepasst. Die alten Platzhalterbegriffe wie `practice`, `timed`, `incorrect` und `skipped` sind aus den zentralen Verträgen entfernt. Stattdessen verwendet der Core jetzt die Zielmodus-Keys und Antwortstatuswerte aus dem Masterplan.
+Der erste spielbare Produktdurchstich ist implementiert. Die Flet-Anwendung beginnt mit einer Auswahl zwischen Addition und Subtraktion, startet eine Runde mit fünf Aufgaben, nimmt ganzzahlige Antworten entgegen und zeigt nach jeder Abgabe ein eindeutiges Richtig-/Falsch-Feedback. Nach der fünften Aufgabe folgt ein Abschlussbildschirm mit Ergebnis sowie Aktionen für eine neue Runde oder eine andere Übung.
 
-Die `GameDefinition` bildet nun die fachlich vergleichsrelevanten Einstellungen ab: Modus, Regel- und Generatorversion, Rechenart-Gewichte, erlaubte Reihen, Faktorgrenzen, Additions-/Subtraktionsobergrenze, gesuchte Positionen, Zeit- und Zielparameter, Strafsekunden und optionale Combo-Regeln. Präsentationsdaten liegen in `GamePresentation` und beeinflussen den Hash nicht.
+Die neue `RoundSession` hält den Ablauf aus der Oberfläche heraus. Sie verwaltet die Phasen `ready`, `task`, `feedback` und `finished`, erzeugt Aufgaben über den bestehenden `TaskGenerator`-Vertrag und speichert kanonische `TaskResult`-Werte. Leere und nicht-ganzzahlige Eingaben bleiben auf derselben Aufgabe und liefern eine verständliche Meldung. Eine zweite Abgabe während der Feedbackphase wird auf Modellebene verhindert.
 
-Die Hashbildung normalisiert den fachlich relevanten Payload. Nicht verwendete Modusfelder werden kanonisch ausgeblendet, damit beispielsweise ein alter `total_time_seconds`-Wert bei einem Aufgaben-Sprint den Hash nicht verändert. Eine nicht leere manuell gesetzte `id` muss zum berechneten Hash passen; andernfalls wird die Definition abgelehnt.
+Die Anwendung ist über den Projekteinstiegspunkt `math-game` sowie direkt über `python -m math_game.app.flet_app` startbar. Flet ist als Laufzeitabhängigkeit deklariert. Der UI-Code bleibt ein Adapter; Generatoren, Antwortbewertung und Rundenfortschritt sind unabhängig von Widgets automatisiert testbar.
 
-## Geänderte Dateien
+## Stand von Verification Gate 3
 
-- `src/math_game/core/contracts.py`
-- `src/math_game/core/game_definition.py`
-- `src/math_game/core/models.py`
-- `tests/core/test_game_definition_hash.py`
-- `docs/PROJECT_PLAN.md`
-- `docs/HANDOVER.md`
+Der funktionale Durchstich und die automatisierten Tests sind abgeschlossen. Pytest, Ruff, Pyright und `git diff --check` laufen ohne Befund. In der aktuellen Arbeitsumgebung war Flet nicht vorinstalliert und konnte wegen gesperrtem Paketnetzwerk nicht nachgeladen werden. Deshalb konnten der reale Flet-Start, ein UI-Smoke-Test gegen die installierte Bibliothek und der vorgeschriebene Screenshot hier noch nicht ausgeführt werden. Diese drei visuellen Laufzeitprüfungen bleiben als klar abgegrenzte Gate-3-Verifikation offen; es fehlt keine weitere fachliche Implementierung des Durchstichs.
 
-## Ausgeführte Checks
+## Bewusst noch nicht umgesetzt
 
-```bash
-python -m ruff format .
-python -m ruff check .
-python -m pyright
-python -m pytest
-```
+- keine SQLite- oder andere Langzeitpersistenz,
+- keine Multiplikation und Division,
+- keine Zeitmessung oder zeitgesteuerten Modi,
+- keine adaptive Schwierigkeit oder universelle Modus-State-Machine,
+- noch keine ausgearbeitete Serienlogik, Animation, Akustik oder echte Gerätehaptik,
+- noch kein veröffentlichungsreifer Desktop- oder Android-Build.
 
-Ergebnis: Alle Checks erfolgreich. `pytest` meldete `15 passed`.
+## Nächster Einstiegspunkt: Sitzung 4
 
-## Architekturstatus
+Sobald Flet in einer ausführbaren Umgebung verfügbar ist, beginnt Sitzung 4 mit einem visuellen Audit und aktuellen Screenshots des implementierten Pfads. Anschließend liegt der Schwerpunkt auf Interaktionsgefühl und Motivation: klare visuelle Hierarchie, großzügige Touch-Ziele, responsive Größen, Fokusführung, Feedback nicht nur über Farbe, eine sichtbare Erfolgsserie und zurückhaltende Übergänge.
 
-Verification Gate 1A ist aus Umsetzungssicht erreicht:
-
-- Domain-Modelle vorhanden.
-- Antwortstatuswerte an Masterplan angepasst.
-- Zielmodus-Keys an Masterplan angepasst.
-- `GameDefinition`-Normalisierung und SHA-256-ID vorhanden.
-- Präsentationsdaten vom Hash getrennt.
-- Standardisierte Ergebnisverträge vorhanden.
-- Tests für zentrale Hash- und Vertragsregeln vorhanden.
-
-Weiterhin bewusst nicht umgesetzt:
-
-- kein Generator,
-- keine Generatorvalidierung,
-- keine konkrete Spielmodus-State-Machine,
-- keine Datenbank,
-- keine Flet-UI,
-- kein Android-Build.
-
-## Bekannte Einschränkungen
-
-Die Validierung der Rechenregeln ist noch nicht vollständig. Generator-spezifische Bedingungen wie `add_sub_max_result >= 2 * factor_min` für Addition oder `add_sub_max_result - 1 >= factor_min` für Subtraktion sind dokumentiert, werden aber erst mit Generatorversion 1 und der Validierungsschicht umgesetzt.
-
-Die `GameSessionResult`-, `MathTask`- und `TaskAttempt`-Modelle sind Ergebnis- und Austauschverträge. Sie erzeugen noch keine Aufgaben und führen noch keine State-Machine aus.
-
-## Nächster Einstiegspunkt
-
-Vor dem nächsten Codex-Schritt sollte Gate 1A fachlich freigegeben werden. Nach Freigabe ist der nächste Umsetzungsschritt Generatorversion 1 inklusive Konfigurationsvalidierung. Danach darf `time_attack` als isolierte headless State-Machine folgen.
+Die bestehende Rundensteuerung soll dabei nur erweitert werden, wenn eine konkrete sichtbare Anforderung dies verlangt. Neue Rechenarten, Persistenz und generische Pluginarbeit dürfen Sitzung 4 nicht verdrängen. Nach Abschluss dieses Pakets verbleibt gemäß Roadmap nur noch Sitzung 5 für Ergebnispräsentation, Härtung und Beta-Abnahme.
