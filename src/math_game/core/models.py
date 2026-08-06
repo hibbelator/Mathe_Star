@@ -74,20 +74,41 @@ class DefinitionHash:
 
 
 @dataclass(frozen=True, slots=True)
-class OperandRange:
-    """Inclusive integer range for operands in a task definition."""
+class MathTask:
+    """Serializable arithmetic task contract produced by a future generator."""
 
-    minimum: int
-    maximum: int
+    task_id: str
+    sequence_number: int
+    operation: ArithmeticOperation
+    operand_left: int
+    operand_right: int
+    result: int
+    missing_position: int
+    displayed_task: str
+    expected_answer: int
 
     def __post_init__(self) -> None:
-        if self.minimum > self.maximum:
-            raise ValueError("minimum must be less than or equal to maximum")
+        if not self.task_id.strip():
+            raise ValueError("task_id must not be blank")
+        if self.sequence_number <= 0:
+            raise ValueError("sequence_number must be positive")
+        if self.missing_position not in {1, 2, 3}:
+            raise ValueError("missing_position must be 1, 2 or 3")
 
 
 @dataclass(frozen=True, slots=True)
-class TaskResult:
-    """Result contract for one answered or unresolved task."""
+class TaskAttempt:
+    """Result of exactly one evaluated task attempt."""
+
+    task: MathTask
+    entered_answer: int | None
+    status: AnswerStatus
+    response_time_seconds: float
+    event_time_monotonic: float
+    streak_before: int = 0
+    streak_after: int = 0
+    multiplier: int = 1
+    points: int = 0
 
     task_id: str
     answer_status: AnswerStatus
@@ -96,5 +117,13 @@ class TaskResult:
     elapsed_ms: int
 
     def __post_init__(self) -> None:
-        if self.elapsed_ms < 0:
-            raise ValueError("elapsed_ms must not be negative")
+        if not self.session_id.strip():
+            raise ValueError("session_id must not be blank")
+        if not self.game_definition_id.strip():
+            raise ValueError("game_definition_id must not be blank")
+        if not self.mode_key.strip():
+            raise ValueError("mode_key must not be blank")
+        if self.finished_at_utc < self.started_at_utc:
+            raise ValueError("finished_at_utc must not be before started_at_utc")
+        if self.result_schema_version <= 0:
+            raise ValueError("result_schema_version must be positive")

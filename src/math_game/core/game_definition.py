@@ -1,7 +1,8 @@
 """Comparable game definition contracts.
 
-A game definition describes *what* may be generated, not *how* tasks are
-produced.  The definition hash is the stable identity used to compare sessions.
+A game definition describes every fachlich relevant setting that makes two game
+sessions comparable.  Presentation details live in ``GamePresentation`` and do
+not participate in the stable definition hash.
 """
 
 from __future__ import annotations
@@ -11,19 +12,89 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import cast
 
-from math_game.core.contracts import ArithmeticOperation, GameMode
-from math_game.core.models import DefinitionHash, OperandRange, normalize_for_hash
+from math_game.core.contracts import GameMode
+from math_game.core.models import DefinitionHash, normalize_for_hash
+
+_VALID_MISSING_POSITIONS: Final[set[int]] = {1, 2, 3}
 
 
 @dataclass(frozen=True, slots=True)
-class OperationDefinition:
-    """Allowed operand range for a single arithmetic operation."""
+class OperationWeights:
+    """Integer operation weights used for weighted operation selection."""
 
-    operation: ArithmeticOperation
-    left: OperandRange
-    right: OperandRange
-    allow_negative_results: bool = False
-    allow_remainders: bool = False
+    addition: int = 0
+    subtraction: int = 0
+    multiplication: int = 0
+    division: int = 0
+
+    def __post_init__(self) -> None:
+        weights = (self.addition, self.subtraction, self.multiplication, self.division)
+        if any(weight < 0 for weight in weights):
+            raise ValueError("operation weights must not be negative")
+        if sum(weights) <= 0:
+            raise ValueError("at least one operation weight must be greater than zero")
+
+    def uses_tables(self) -> bool:
+        """Return whether multiplication or division can be selected."""
+
+        return self.multiplication > 0 or self.division > 0
+
+
+@dataclass(frozen=True, slots=True)
+class ComboThreshold:
+    """Combo multiplier starting at a minimum streak length."""
+
+    streak_from: int
+    multiplier: int
+
+    def __post_init__(self) -> None:
+        if self.streak_from <= 0:
+            raise ValueError("streak_from must be positive")
+        if self.multiplier <= 0:
+            raise ValueError("multiplier must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ComboRules:
+    """Deterministic point rules for the combo mode."""
+
+    base_points: int = 100
+    thresholds: tuple[ComboThreshold, ...] = (
+        ComboThreshold(1, 1),
+        ComboThreshold(5, 2),
+        ComboThreshold(10, 3),
+        ComboThreshold(15, 4),
+    )
+
+    def __post_init__(self) -> None:
+        if self.base_points <= 0:
+            raise ValueError("base_points must be positive")
+        if not self.thresholds:
+            raise ValueError("at least one combo threshold is required")
+        ordered = tuple(sorted(self.thresholds, key=lambda threshold: threshold.streak_from))
+        if ordered != self.thresholds:
+            raise ValueError("combo thresholds must be sorted by streak_from")
+        if len({threshold.streak_from for threshold in self.thresholds}) != len(self.thresholds):
+            raise ValueError("combo thresholds must not contain duplicate streak_from values")
+
+
+@dataclass(frozen=True, slots=True)
+class GamePresentation:
+    """Mutable presentation metadata stored outside the definition hash."""
+
+    display_name: str
+    visual_theme: str
+    is_visible: bool = True
+    is_favorite: bool = False
+    sort_order: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.display_name.strip():
+            raise ValueError("display_name must not be blank")
+        if not self.visual_theme.strip():
+            raise ValueError("visual_theme must not be blank")
+        if self.sort_order < 0:
+            raise ValueError("sort_order must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,4 +151,34 @@ class GameDefinition:
     def definition_hash(self) -> DefinitionHash:
         """Calculate the stable SHA-256 hash for this definition."""
 
-        return DefinitionHash.from_payload(self.normalized_payload())
+        return DefinitionHash(algorithm="sha256", value=self.id)
+
+    def _normalized_total_time_seconds(self) -> float | None:
+        if self.mode_key in {GameMode.TIME_ATTACK, GameMode.PERFECT_RUN, GameMode.PER_TASK_TIMER}:
+            return self.total_time_seconds
+        return None
+
+    def _normalized_per_task_time_seconds(self) -> float | None:
+        if self.mode_key in {GameMode.TIME_ATTACK, GameMode.PER_TASK_TIMER}:
+            return self.per_task_time_seconds
+        return None
+
+    def _normalized_task_count(self) -> int | None:
+        if self.mode_key in {GameMode.TASK_SPRINT, GameMode.PER_TASK_TIMER, GameMode.COMBO}:
+            return self.task_count
+        return None
+
+    def _normalized_correct_target(self) -> int | None:
+        if self.mode_key is GameMode.TARGET_HUNT:
+            return self.correct_target
+        return None
+
+    def _normalized_penalty_seconds(self) -> float:
+        if self.mode_key in {GameMode.TASK_SPRINT, GameMode.TARGET_HUNT}:
+            return self.penalty_seconds
+        return 0.0
+
+    def _normalized_combo_rules(self) -> ComboRules | None:
+        if self.mode_key is GameMode.COMBO:
+            return self.combo_rules
+        return None

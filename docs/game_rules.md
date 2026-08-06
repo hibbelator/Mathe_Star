@@ -2,39 +2,34 @@
 
 Dieses Dokument beschreibt die fachlichen Zielregeln, die ab Sitzung 1 gelten. Addition und Subtraktion sind inzwischen als einzelne Generatoren implementiert. Ein vollständiger Generatorverbund und konkrete Modusabläufe existieren noch nicht.
 
-## Rechenarten
+Soweit dieses Dokument von VBA-Details abweicht, ist die Abweichung beabsichtigt. Bekannte Excel-Fehler werden nicht übernommen.
 
-Zulässige Rechenarten sind:
+---
 
-1. Addition
-2. Subtraktion
-3. Multiplikation
-4. Division
+## 1. Rechenarten und Gewichte
 
-Jede Rechenart wird über eine Operationdefinition mit linkem und rechtem Operandenbereich beschrieben. Zusätzliche Eigenschaften wie negative Ergebnisse oder Divisionen mit Rest sind Teil der Definition und damit hashrelevant.
+Die App unterstützt diese Rechenarten:
 
-## Antwortstatus
+- `addition`,
+- `subtraction`,
+- `multiplication`,
+- `division`.
 
-Jede Aufgabe besitzt genau einen kanonischen Antwortstatus:
+Eine `GameDefinition` enthält die Gewichte dieser Rechenarten als `OperationWeights`. Gewichte müssen ganze Zahlen größer oder gleich `0` sein. Mindestens ein Gewicht muss größer als `0` sein.
 
-- `unanswered`: Es liegt noch keine Antwort vor.
-- `correct`: Die gegebene Antwort entspricht der erwarteten Antwort.
-- `incorrect`: Die gegebene Antwort ist fachlich falsch.
-- `skipped`: Die Aufgabe wurde bewusst übersprungen.
-- `timeout`: Die Aufgabe wurde durch Zeitablauf beendet.
+Die Auswahlwahrscheinlichkeit lautet:
 
-## Spielmodi
+```text
+P(Operation) = Gewicht(Operation) / Summe aller Gewichte
+```
 
-Für Sitzung 1 werden Spielmodi nur als Vertragsnamen modelliert:
+Ein physisch aufgeblähter Auswahlpool ist nicht erforderlich. Wichtig ist die fachlich identische Verteilung und Reproduzierbarkeit bei festem Seed.
 
-- `practice`
-- `timed`
-- `fixed_tasks`
-- `mistake_review`
+---
 
-Die konkrete Ablaufsteuerung dieser Modi ist ausdrücklich nicht Bestandteil von Verification Gate 1A.
+## 2. GameDefinition
 
-## Vergleichbarkeit
+Eine vollständige Kombination aus Recheninhalt und Modusparametern bildet eine unveränderliche `GameDefinition`. Direkte Rekorde und Vergleiche dürfen nur innerhalb derselben `game_definition_id` erfolgen.
 
 Zwei Ergebnisse sind nur dann direkt vergleichbar, wenn sie auf derselben normalisierten Spieldefinition beruhen. Der Definitions-Hash wird aus dem kanonischen JSON der Definition gebildet. Dadurch sind Vergleiche unabhängig von Python-Objektidentitäten, Prozesszustand oder Dictionary-Reihenfolgen.
 
