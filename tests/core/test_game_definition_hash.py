@@ -67,3 +67,26 @@ def test_definition_hash_changes_when_definition_changes() -> None:
     )
 
     assert base.definition_hash() != changed.definition_hash()
+
+
+def test_definition_copies_metadata_to_keep_its_hash_stable() -> None:
+    metadata = {"level": "1"}
+    definition = GameDefinition(
+        identifier="add-small",
+        title="Small addition",
+        operations=(
+            OperationDefinition(
+                operation=ArithmeticOperation.ADDITION,
+                left=OperandRange(1, 5),
+                right=OperandRange(1, 5),
+            ),
+        ),
+        mode=GameMode.PRACTICE,
+        metadata=metadata,
+    )
+    original_hash = definition.definition_hash()
+
+    metadata["level"] = "2"
+
+    assert definition.metadata == {"level": "1"}
+    assert definition.definition_hash() == original_hash
