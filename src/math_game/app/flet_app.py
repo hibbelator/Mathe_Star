@@ -1295,7 +1295,16 @@ class MathAdventureApp:
                         if selected_source == "computer_history" and own_summary
                         else None
                     )
-                    duration = float(game.duration_seconds or max(30, (game.task_count or 20) * 3))
+                    # A five-minute preset must not leave a short target race parked
+                    # at zero for many seconds. Computer pacing follows the chosen
+                    # target (about three seconds per point), capped by the game's
+                    # official duration for comparability.
+                    target_duration = max(30, target_points * 3)
+                    duration = float(
+                        min(game.duration_seconds, target_duration)
+                        if game.duration_seconds
+                        else target_duration
+                    )
                     competitors = [
                         computer_competitor(
                             game.definition_hash(),
@@ -1664,6 +1673,8 @@ class MathAdventureApp:
                 points_after=points,
             )
         )
+        if self.race_competitors and not self.dialog_open:
+            self._refresh_race_panel()
 
     def _next_task(self) -> None:
         self._cancel_auto_advance()
@@ -1695,16 +1706,19 @@ class MathAdventureApp:
             and self.race_competitors
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
-            and self.session.feedback is None
             and self.race_live_panel is not None
         ):
-            # Updating the whole page here recreated the TextField every 500 ms and
-            # erased an answer while it was being typed.  Replace only the contents
-            # of the live race panel; task, focus and input value remain untouched.
-            refreshed = self._build_race_panel()
-            self.race_live_panel.content = refreshed.content
-            self.race_live_panel.update()
+            self._refresh_race_panel()
             self._schedule_ghost_tick()
+
+    def _refresh_race_panel(self) -> None:
+        """Refresh positions immediately while retaining the rest of the task UI."""
+
+        if self.race_live_panel is None:
+            return
+        refreshed = self._build_race_panel()
+        self.race_live_panel.content = refreshed.content
+        self.race_live_panel.update()
 
     def _cancel_ghost_tick(self) -> None:
         if self.ghost_tick_timer is not None:

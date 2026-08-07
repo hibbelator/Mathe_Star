@@ -120,10 +120,16 @@ def computer_competitor(
     points = 0
     events: list[ScoreEvent] = []
     for attempt in range(1, attempts + 1):
-        correct = rng.random() < accuracy
+        # Start visibly instead of making a new race look frozen at zero. Later
+        # attempts remain fallible and level-dependent.
+        correct = attempt == 1 or (attempt != attempts // 2 and rng.random() < accuracy)
         points = max(0, points + (1 if correct else -1))
         wobble = rng.uniform(0.72, 1.28) if variable else 1.0
-        event_time = min(duration_seconds, attempt * interval * wobble)
+        event_time = (
+            min(1.5, interval)
+            if attempt == 1 and variable
+            else min(duration_seconds, attempt * interval * wobble)
+        )
         events.append(ScoreEvent(event_time, correct, points))
     events.sort(key=lambda event: event.elapsed_seconds)
     # Recalculate the visible score after sorting jittered events.

@@ -16,7 +16,8 @@ def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
     dynamic_app.ghost_tick_timer = object()
     dynamic_app.dialog_open = False
     dynamic_app.race_competitors = [object()]
-    dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=None)
+    # A visible correct/wrong feedback must not stop the recurring race clock.
+    dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=object())
     dynamic_app.race_live_panel = panel
     dynamic_app.answer_field = answer_field
     dynamic_app._build_race_panel = lambda: SimpleNamespace(content="new")
