@@ -78,6 +78,14 @@ class MathAdventureApp:
         self.special_deadline_timer: threading.Timer | None = None
         self.ghost_tick_timer: threading.Timer | None = None
         self.race_live_panel: ft.Container | None = None
+        self.dialog_open = False
+        self.dialog_paused_at = 0.0
+        self.task_number_text: ft.Text | None = None
+        self.task_score_text: ft.Text | None = None
+        self.task_progress: ft.ProgressBar | None = None
+        self.task_prompt: ft.Text | None = None
+        self.task_feedback: ft.Container | None = None
+        self.task_action: ft.ElevatedButton | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -136,7 +144,8 @@ class MathAdventureApp:
         ):
             self.answer_field.focus()
         if (
-            self.race_competitors
+            not self.dialog_open
+            and self.race_competitors
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.session.feedback is None
@@ -479,39 +488,32 @@ class MathAdventureApp:
         wrong_count = len(session.results) - session.correct_count
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
         timed = bool(self.active_game and self.active_game.duration_seconds)
+        self.task_number_text = ft.Text(
+            f"{self.active_game.name if self.active_game else 'Spiel'} · "
+            f"Aufgabe {session.task_number}/{session.task_count}",
+            color=MUTED,
+        )
+        self.task_score_text = ft.Text(
+            f"✓ {session.correct_count}   ✕ {wrong_count}   ⭐ {current_points} P   "
+            f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s",
+            color=PRIMARY,
+            weight=ft.FontWeight.BOLD,
+        )
+        self.task_progress = ft.ProgressBar(
+            value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"
+        )
+        self.task_prompt = ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK)
         controls: list[ft.Control] = [
             ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 controls=[
-                    ft.Text(
-                        f"{self.active_game.name if self.active_game else 'Spiel'} · "
-                        f"Aufgabe {session.task_number}/{session.task_count}",
-                        color=MUTED,
-                    ),
-                    ft.Row(
-                        spacing=12,
-                        controls=[
-                            ft.Text(
-                                f"✓ {session.correct_count}",
-                                color=SUCCESS,
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                            ft.Text(f"✕ {wrong_count}", color=ERROR, weight=ft.FontWeight.BOLD),
-                            ft.Text(
-                                f"⭐ {current_points} P", color=PRIMARY, weight=ft.FontWeight.BOLD
-                            ),
-                            ft.Text(
-                                f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s",
-                                color=WARNING if timed else MUTED,
-                                weight=ft.FontWeight.BOLD,
-                            ),
-                        ],
-                    ),
+                    self.task_number_text,
+                    self.task_score_text,
                 ],
             ),
-            ft.ProgressBar(value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"),
+            self.task_progress,
             *self._race_controls(),
-            ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK),
+            self.task_prompt,
             ft.Row(
                 alignment=ft.MainAxisAlignment.CENTER,
                 controls=[
@@ -531,9 +533,15 @@ class MathAdventureApp:
             on_submit=self._on_submit_clicked,
         )
         controls.append(self.answer_field)
+        self.task_feedback = ft.Container(visible=False)
+        controls.append(self.task_feedback)
         if feedback:
             if feedback.is_correct:
-                controls.append(self._feedback("✓ Richtig! Super gelöst.", SUCCESS, "#E6F4EA"))
+                self.task_feedback.content = ft.Text(
+                    "✓ Richtig! Super gelöst.", size=18, color=SUCCESS, weight=ft.FontWeight.BOLD
+                )
+                self.task_feedback.bgcolor = "#E6F4EA"
+                self.task_feedback.visible = True
                 self._schedule_auto_advance(0.8)
             elif not feedback.is_task_complete:
                 controls.append(
@@ -545,12 +553,8 @@ class MathAdventureApp:
                         f"✕ Die richtige Antwort ist {feedback.expected_answer}.", ERROR, "#FCE8E6"
                     )
                 )
-        if feedback and feedback.is_task_complete and not feedback.is_correct:
-            controls.append(
-                self._action_button("Nächste Aufgabe (Enter)", lambda _: self._next_task())
-            )
-        elif feedback is None or not feedback.is_task_complete:
-            controls.append(self._action_button("Antwort prüfen", self._on_submit_clicked))
+        self.task_action = self._action_button("Antwort prüfen", self._on_submit_clicked)
+        controls.append(self.task_action)
         return ft.Column(
             horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=18, controls=controls
         )
@@ -1148,6 +1152,7 @@ class MathAdventureApp:
         )
 
     def _configure_race(self, game: DefinedGame) -> None:
+        self._pause_for_dialog()
         recorded = self.statistics.race_competitors(game.definition_hash(), 8)
         own_summary = (
             self.statistics.summary(self.active_player.id, game.definition_hash())
@@ -1270,6 +1275,7 @@ class MathAdventureApp:
             # can keep its modal barrier in front of the game. Page.close() removes
             # it through the matching public API and performs the required update.
             self.page.close(dialog)
+            self._resume_after_dialog()
 
         def start(_: object) -> None:
             try:
@@ -1320,12 +1326,19 @@ class MathAdventureApp:
                 self.page.update()
                 return
             self.page.close(dialog)
-            self._start_game(
-                game,
-                competitors=competitors,
-                target_points=target_points,
-                race_vehicle=vehicle.value or "🚀",
-            )
+            self.dialog_open = False
+
+            def begin_race() -> None:
+                self._start_game(
+                    game,
+                    competitors=competitors,
+                    target_points=target_points,
+                    race_vehicle=vehicle.value or "🚀",
+                )
+
+            # Give Flet one client update to remove the modal barrier before the
+            # game view is changed. Otherwise both updates can overtake each other.
+            threading.Timer(0.12, begin_race).start()
 
         dialog.actions = [
             ft.TextButton("Abbrechen", on_click=close),
@@ -1489,20 +1502,56 @@ class MathAdventureApp:
         )
 
     def _show_confirmation(self, title: str, message: str, action: Callable[[], None]) -> None:
+        self._pause_for_dialog()
         dialog = ft.AlertDialog(modal=True, title=ft.Text(title), content=ft.Text(message))
 
         def close(_: object) -> None:
             self.page.close(dialog)
+            self._resume_after_dialog()
 
         def confirm(_: object) -> None:
             self.page.close(dialog)
-            action()
+            self.dialog_open = False
+            threading.Timer(0.12, action).start()
 
         dialog.actions = [
             ft.TextButton("Abbrechen", on_click=close),
             ft.ElevatedButton("Ja, fortfahren", on_click=confirm),
         ]
         self.page.open(dialog)
+
+    def _pause_for_dialog(self) -> None:
+        """Pause live movement and elapsed race time while a modal has focus."""
+
+        if self.dialog_open:
+            return
+        self.dialog_open = True
+        self.dialog_paused_at = time.monotonic()
+        self._cancel_ghost_tick()
+        self._cancel_auto_advance()
+        self._cancel_special_deadline()
+
+    def _resume_after_dialog(self) -> None:
+        if not self.dialog_open:
+            return
+        paused_for = max(0.0, time.monotonic() - self.dialog_paused_at)
+        if self.round_started_at:
+            self.round_started_at += paused_for
+        if isinstance(self.special_mode, BlitzMode | WarmUpMode):
+            self.special_mode.started_at += paused_for
+        self.dialog_open = False
+        if self.race_competitors and self.session and self.session.phase is RoundPhase.TASK:
+            self._schedule_ghost_tick()
+        if self.session and self.session.feedback and self.session.feedback.is_correct:
+            self._schedule_auto_advance(0.8)
+        if isinstance(self.special_mode, BlitzMode | WarmUpMode):
+            remaining = max(
+                0.0,
+                self.special_mode.duration_seconds
+                - (time.monotonic() - self.special_mode.started_at),
+            )
+            self.special_deadline_timer = threading.Timer(remaining, self._special_deadline_reached)
+            self.special_deadline_timer.start()
 
     def _choose_another(self) -> None:
         self.session, self.active_game, self.view = None, None, "play"
@@ -1520,7 +1569,87 @@ class MathAdventureApp:
         self._append_score_event(feedback.is_correct)
         if not feedback.is_correct and not feedback.is_task_complete:
             self.answer_field.value = ""
-        self.render()
+        self._update_task_controls()
+
+    def _update_task_controls(self) -> None:
+        """Update only changing task widgets without rebuilding the whole page."""
+
+        session = self._active_session()
+        task = session.current_task
+        if (
+            task is None
+            or self.task_number_text is None
+            or self.task_score_text is None
+            or self.task_progress is None
+            or self.task_prompt is None
+            or self.task_feedback is None
+            or self.task_action is None
+            or self.answer_field is None
+        ):
+            self.render()
+            return
+        number_text = self.task_number_text
+        score_text = self.task_score_text
+        progress = self.task_progress
+        prompt = self.task_prompt
+        feedback_box = self.task_feedback
+        action = self.task_action
+        answer = self.answer_field
+        points = self.live_score_events[-1].points_after if self.live_score_events else 0
+        wrong = len(session.results) - session.correct_count
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        timed = bool(self.active_game and self.active_game.duration_seconds)
+        number_text.value = (
+            f"{self.active_game.name if self.active_game else 'Spiel'} · "
+            f"Aufgabe {session.task_number}/{session.task_count}"
+        )
+        score_text.value = (
+            f"✓ {session.correct_count}   ✕ {wrong}   ⭐ {points} P   "
+            f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s"
+        )
+        progress.value = session.progress
+        prompt.value = task.prompt
+        feedback = session.feedback
+        feedback_box.visible = feedback is not None
+        feedback_box.padding = 12
+        feedback_box.border_radius = 12
+        if feedback is None:
+            answer.value = ""
+            answer.disabled = False
+            answer.error_text = None
+            action.text = "Antwort prüfen"
+            action.on_click = self._on_submit_clicked
+            action.visible = True
+        elif feedback.is_correct:
+            feedback_box.bgcolor = "#E6F4EA"
+            feedback_box.content = ft.Text(
+                "✓ Richtig! Super gelöst.", size=18, color=SUCCESS, weight=ft.FontWeight.BOLD
+            )
+            action.visible = False
+            self._schedule_auto_advance(0.8)
+        elif not feedback.is_task_complete:
+            feedback_box.bgcolor = "#FEF9E7"
+            feedback_box.content = ft.Text(
+                "⚠️ Nicht ganz. Du hast noch 1 Versuch!",
+                size=18,
+                color=WARNING,
+                weight=ft.FontWeight.BOLD,
+            )
+        else:
+            feedback_box.bgcolor = "#FCE8E6"
+            feedback_box.content = ft.Text(
+                f"✕ Die richtige Antwort ist {feedback.expected_answer}.",
+                size=18,
+                color=ERROR,
+                weight=ft.FontWeight.BOLD,
+            )
+            answer.disabled = True
+            action.text = "Nächste Aufgabe (Enter)"
+            action.on_click = lambda _: self._next_task()
+            action.visible = True
+        self.page.update()
+        if feedback is None:
+            answer.focus()
 
     def _append_score_event(self, correct: bool) -> None:
         game = self.active_game
@@ -1539,7 +1668,10 @@ class MathAdventureApp:
     def _next_task(self) -> None:
         self._cancel_auto_advance()
         self._active_session().advance_to_next_task()
-        self.render()
+        if self._active_session().phase is RoundPhase.FINISHED:
+            self.render()
+        else:
+            self._update_task_controls()
 
     def _schedule_auto_advance(self, seconds: float) -> None:
         self._cancel_auto_advance()
@@ -1559,7 +1691,8 @@ class MathAdventureApp:
     def _ghost_tick(self) -> None:
         self.ghost_tick_timer = None
         if (
-            self.race_competitors
+            not self.dialog_open
+            and self.race_competitors
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.session.feedback is None

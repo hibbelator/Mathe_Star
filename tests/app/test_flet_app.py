@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +14,7 @@ def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
     panel = SimpleNamespace(content="old", update_calls=0)
     panel.update = lambda: setattr(panel, "update_calls", panel.update_calls + 1)
     dynamic_app.ghost_tick_timer = object()
+    dynamic_app.dialog_open = False
     dynamic_app.race_competitors = [object()]
     dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=None)
     dynamic_app.race_live_panel = panel
@@ -56,6 +58,15 @@ def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
     page.close = close_dialog
     dynamic_app.page = page
     dynamic_app.active_player = None
+    dynamic_app.dialog_open = False
+    dynamic_app.dialog_paused_at = 0.0
+    dynamic_app.round_started_at = 0.0
+    dynamic_app.race_competitors = []
+    dynamic_app.session = None
+    dynamic_app.special_mode = None
+    dynamic_app.special_deadline_timer = None
+    dynamic_app._cancel_ghost_tick = lambda: None
+    dynamic_app._cancel_auto_advance = lambda: None
     dynamic_app.statistics = SimpleNamespace(race_competitors=race_competitors)
     dynamic_app._start_game = start_game
 
@@ -66,7 +77,46 @@ def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
 
     dynamic_app._configure_race(EXCEL_PRESETS[0])
     dialog = calls[-1][1]
+    dialog.update = lambda: None
     dialog.actions[1].on_click(None)
+    time.sleep(0.2)
 
     assert calls[-2] == ("close", dialog)
     assert calls[-1] == ("start", EXCEL_PRESETS[0])
+
+
+def test_next_task_updates_existing_controls_without_full_render() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    session = SimpleNamespace(
+        current_task=SimpleNamespace(prompt="8 + 7 = ?"),
+        task_number=2,
+        task_count=10,
+        correct_count=1,
+        results=[object()],
+        progress=0.1,
+        feedback=None,
+    )
+    dynamic_app.session = session
+    dynamic_app.active_game = EXCEL_PRESETS[0]
+    dynamic_app.live_score_events = []
+    dynamic_app.round_started_at = time.monotonic()
+    dynamic_app.task_number_text = SimpleNamespace(value="old")
+    dynamic_app.task_score_text = SimpleNamespace(value="old")
+    dynamic_app.task_progress = SimpleNamespace(value=0.0)
+    dynamic_app.task_prompt = SimpleNamespace(value="old")
+    dynamic_app.task_feedback = SimpleNamespace(
+        visible=True, padding=0, border_radius=0, bgcolor=None, content=None
+    )
+    dynamic_app.task_action = SimpleNamespace(text="old", on_click=None, visible=False)
+    dynamic_app.answer_field = SimpleNamespace(
+        value="17", disabled=True, error_text="old", focus=lambda: None
+    )
+    dynamic_app.page = SimpleNamespace(update=lambda: None)
+    dynamic_app.render = lambda: (_ for _ in ()).throw(AssertionError("full render"))
+
+    dynamic_app._update_task_controls()
+
+    assert dynamic_app.task_prompt.value == "8 + 7 = ?"
+    assert dynamic_app.answer_field.value == ""
+    assert dynamic_app.task_action.text == "Antwort prüfen"
