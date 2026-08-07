@@ -52,6 +52,24 @@
 
 **Konsequenz:** Flet-Code und eine kleine konkrete Rundensteuerung sind ab Sitzung 3 ausdrücklich erwünscht. SQLite, eine generische Plugin-Infrastruktur und eine universelle Spielmodus-State-Machine bleiben außerhalb der Beta, solange sie nicht durch einen beobachtbaren Nutzerbedarf begründet sind.
 
+## ADR-010: Verlaufsabhängige Funktionen warten auf SQLite
+
+**Status:** Angenommen, Umsetzung nach der Beta.
+
+**Entscheidung:** Dauerhafte Lernverläufe werden ausschließlich in der geplanten
+SQLite-Persistenz modelliert. Ghost-Vergleiche, Rekorde je Rechenart,
+Tages-Streaks, Fehler-Heatmaps, zeitversetzte Fehlerwiederholung und Trendlinien
+werden nicht auf der vorläufigen JSON-Statistik aufgebaut.
+
+**Begründung:** Diese Funktionen benötigen Abfragen über Sessions, Zeiträume,
+Rechenarten und einzelne Aufgabenversuche. JSON eignet sich für den kleinen
+aktuellen Übergang, würde für diese Abfragen aber eine zweite Persistenzlogik und
+eine spätere verlustanfällige Migration erzeugen.
+
+**Konsequenz:** Ablaufmodi ohne Historienbedarf dürfen vorher als voneinander
+isolierte Module entstehen. Alle Funktionen aus Post-Beta-Phase 2 bleiben bis
+zum grünen SQLite-Persistenz-Gate gesperrt.
+
 ## ADR-009: Explizite Rundensteuerung hinter der Flet-Oberfläche
 
 **Entscheidung:** Die erste UI verwendet eine konkrete `RoundSession` mit vier Phasen. Sie bleibt unabhängig von Flet und wird über Methoden für Start, Antwortabgabe und Fortsetzung gesteuert. Die Oberfläche rendert diese Zustände, enthält aber weder Antwortbewertung noch Aufgabenerzeugung.

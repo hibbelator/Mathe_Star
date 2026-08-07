@@ -45,6 +45,10 @@ class GameMode(StrEnum):
     TARGET_HUNT = "target_hunt"
     PER_TASK_TIMER = "per_task_timer"
     COMBO = "combo"
+    BLITZ = "blitz"
+    ACCURACY = "accuracy"
+    PLUMI_ENDLESS = "plumi_endless"
+    WARM_UP = "warm_up"
 
 
 class ComparisonScope(StrEnum):

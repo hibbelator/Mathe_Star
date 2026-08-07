@@ -1,6 +1,6 @@
 # Mathe-Abenteuer – zentraler Projektplan
 
-**Stand:** 2026-08-05  
+**Stand:** 2026-08-07
 **Projekt:** Mathe-Abenteuer  
 **Zielplattform:** private Android-App als direkt installierbare APK  
 **Package-ID:** `de.familie.matheabenteuer`  
@@ -88,13 +88,13 @@ Wichtig: Package-ID und Signaturschlüssel dürfen nach der ersten dauerhaft gen
 | Dokumentation | begonnen | Zentrales Planungsdokument sowie Legacy-, Spielregel-, Architektur-, Entscheidungs- und Handover-Dokumente sind vorhanden; Legacy- und Spielregel-Dokumente wurden an den Masterplan angepasst. |
 | Domain-Modelle | erledigt für Gate 1A | Core-Modelle wurden an das Zielmodell angepasst: `OperationWeights`, `ComboRules`, `GameDefinition`, `GamePresentation`, `MathTask`, `TaskAttempt`, `ResultSummary`, `GameSessionResult`. |
 | Definition-Hash | erledigt für Gate 1A | Hashbildung nutzt das normalisierte `GameDefinition`-Payload; Präsentationsdaten sind getrennt und ungenutzte Modusfelder werden kanonisch normalisiert. |
-| Generator v1 | offen | Erst nach Verification Gate 1A. |
+| Generator v1 | begonnen | Addition, Subtraktion, Multiplikation, Division und gewichtete Definitionen sind spielbar; vollständige Legacy-Lücken bleiben zu prüfen. |
 | Headless `time_attack` | offen | Erst nach Freigabe nach Gate 1A. |
 | SQLite-Persistenz | offen | Sitzung 2, Phase A. |
-| Flet-App-Shell | offen | Sitzung 2, nach grünen Persistenztests. |
+| Flet-App-Shell | begonnen | Viergeteilter Einstieg, Definitionseditor, Spielrunde und einfache JSON-Statistik sind vorhanden. |
 | Android Debug-APK | offen | Sitzung 2, Phase C. |
-| Weitere Spielmodi | offen | Sitzungen 3 und 4. |
-| Statistik, Backup, Release | offen | Sitzung 5. |
+| Weitere Spielmodi | begonnen | Vier Post-Beta-Modi ohne SQLite sind als isolierte headless Module umgesetzt. |
+| Statistik, Backup, Release | begonnen | Vorläufige lokale JSON-Rundenstatistik vorhanden; SQLite, Backup und Release bleiben offen. |
 
 ---
 
@@ -257,6 +257,35 @@ Jede Sitzung muss die tatsächlich ausgeführten Befehle und Ergebnisse zusätzl
 | 2026-08-05 | Zentrales Planungsdokument `docs/PROJECT_PLAN.md` angelegt. | erledigt |
 | 2026-08-05 | Nächster offener Dokumentationsschritt erledigt: `legacy_excel_reference.md` und `game_rules.md` wurden an die verbindliche Legacy-Basis und die Ziel-Spielregeln angepasst. | erledigt |
 | 2026-08-05 | Core-Domainmodelle, Antwortstatus, Zielmodus-Keys, Ergebnisverträge, Hash-Normalisierung und Hash-Tests an den Masterplan angepasst. | erledigt |
+| 2026-08-07 | Viergeteiltes Hauptmenü, Excel-Presets, Editor, gewichteter Generator und vorläufige Rundenstatistik ergänzt. | begonnen |
+| 2026-08-07 | Post-Beta-Plan in zwei Phasen gegliedert; Blitzrunde, Genauigkeit, PluMi Endless und Warm-up als getrennte headless Ablaufmodule implementiert. | erledigt |
+
+## 10.1 Post-Beta-Erweiterungen
+
+### Phase 1: keine SQLite-Abhängigkeit
+
+- [x] Blitzrunde mit 30–60 Sekunden Zeitfenster und sitzungslokalem Leaderboard.
+- [x] Genauigkeits-Modus ohne Zeitwertung.
+- [x] PluMi Endless bis zum dritten Fehler.
+- [x] 60-Sekunden-Warm-up mit expliziter Übergabe an das Hauptspiel.
+- [x] Die vier Modi über eine eigene Flet-Ansicht spielbar machen; die fachlichen
+  State-Machines bleiben dennoch getrennt.
+
+Die Ablaufimplementierungen liegen getrennt unter `math_game/modes`. Sie teilen
+weder eine Basisklasse noch eine State-Machine. Gemeinsame Verträge beschränken
+sich weiterhin auf universelle Core-Typen.
+
+### Phase 2: benötigt SQLite nach ADR-010
+
+- [ ] Ghost-Modus gegen den persönlichen Vorwochenwert.
+- [ ] Personal-Best-Tracker je Rechenart.
+- [ ] Tages-Streak mit Freeze-Token.
+- [ ] Stärken-/Schwächen-Heatmap.
+- [ ] Spaced-Repetition-Fehlerwiederholung nach 1, 3 und 7 Tagen.
+- [ ] Trendlinie „Richtige pro Minute“.
+
+Diese Punkte werden erst begonnen, wenn das SQLite-Schema Sessions und
+Aufgabenversuche dauerhaft, versioniert und testbar abbildet.
 
 ---
 
