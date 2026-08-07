@@ -31,3 +31,46 @@ def test_statistics_never_compare_different_definitions_or_players(tmp_path: Pat
 
     assert set(best) == {"sha256:a", "sha256:b"}
     assert best["sha256:a"].correct == 5
+
+
+def test_dashboard_summary_calculates_score_history_and_trend(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    repository.add(
+        RoundStatistic(player.id, "game", "Spiel", "sha256:a", 5, 10, 40.0, "2026-01-01")
+    )
+    repository.add(
+        RoundStatistic(player.id, "game", "Spiel", "sha256:a", 9, 10, 30.0, "2026-01-02")
+    )
+    repository.add(
+        RoundStatistic(player.id, "game", "Spiel", "sha256:other", 10, 10, 1.0, "2026-01-03")
+    )
+
+    summary = repository.summary(player.id, "sha256:a")
+
+    assert summary is not None
+    assert len(summary.rounds) == 2
+    assert summary.average_accuracy == 0.7
+    assert summary.best_accuracy == 0.9
+    assert summary.average_seconds == 35.0
+    assert summary.accuracy_trend == 0.4
+    assert summary.best_score == 1095
+
+
+def test_leaderboard_uses_best_round_per_player_for_identical_game(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    players = PlayerRepository(database)
+    mia, ben = players.add("Mia"), players.add("Ben")
+    repository = StatisticsRepository(database)
+    repository.add(RoundStatistic(mia.id, "game", "Spiel", "sha256:a", 8, 10, 30.0))
+    repository.add(RoundStatistic(mia.id, "game", "Spiel", "sha256:a", 9, 10, 30.0))
+    repository.add(RoundStatistic(ben.id, "game", "Spiel", "sha256:a", 10, 10, 50.0))
+    repository.add(RoundStatistic(ben.id, "game", "Spiel", "sha256:b", 10, 10, 1.0))
+
+    leaderboard = repository.leaderboard("sha256:a")
+
+    assert [entry.player_name for entry in leaderboard] == ["Ben", "Mia"]
+    assert [entry.rank for entry in leaderboard] == [1, 2]
+    assert leaderboard[0].score == 1200
+    assert leaderboard[1].score == 1095

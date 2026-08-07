@@ -33,6 +33,11 @@ einem Bildpfad. Statistische Bestleistungen werden über einen Hash der vollstä
 Spielregeln gruppiert; dadurch fließen weder andere Spieler noch nur ähnlich benannte oder
 nachträglich veränderte Spiele in einen Vergleich ein.
 
+Direkt nach jeder beendeten Runde erscheint ein Ergebnis-Dashboard mit Score, persönlicher
+Bestquote, Durchschnittszeit und Entwicklung. Die aufklappbare Detailansicht ergänzt den
+Rundenverlauf und eine Bestenliste. Auch dort bleibt die Vergleichsbasis streng auf dieselbe
+Spieldefinition begrenzt, während die persönlichen Kennzahlen nur das aktive Profil betreffen.
+
 ## Weg zur ersten Beta
 
 Die weitere Entwicklung ist nicht mehr als Folge einzelner Generatorpakete geplant. Die erste Beta soll in höchstens drei weiteren Sitzungen entstehen: zunächst als vollständig spielbarer Flet-Durchstich, danach mit gezieltem Fokus auf Interaktionsgefühl und motivierendes Feedback und schließlich mit Ergebnispräsentation sowie Stabilisierung. Die konkreten Abnahmekriterien stehen in [`docs/roadmap.md`](docs/roadmap.md).

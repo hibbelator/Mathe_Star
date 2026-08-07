@@ -29,6 +29,36 @@ class RoundStatistic:
     def accuracy(self) -> float:
         return self.correct / self.total
 
+    @property
+    def score(self) -> int:
+        """Return a child-friendly score comparable within one game definition."""
+
+        accuracy_points = round(self.accuracy * 1000)
+        task_points = self.correct * 25
+        time_penalty = min(round(self.elapsed_seconds), accuracy_points + task_points)
+        return max(0, accuracy_points + task_points - time_penalty)
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceSummary:
+    """Aggregated values for one player and one exact game definition."""
+
+    rounds: tuple[RoundStatistic, ...]
+    average_accuracy: float
+    best_accuracy: float
+    average_seconds: float
+    best_score: int
+    accuracy_trend: float
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderboardEntry:
+    rank: int
+    player_name: str
+    score: int
+    accuracy: float
+    elapsed_seconds: float
+
 
 @dataclass(slots=True)
 class StatisticsRepository:
@@ -76,3 +106,65 @@ class StatisticsRepository:
             ):
                 best[item.definition_hash] = item
         return best
+
+    def summary(self, player_id: int, definition_hash: str) -> PerformanceSummary | None:
+        rounds = tuple(
+            item for item in self.load(player_id) if item.definition_hash == definition_hash
+        )
+        if not rounds:
+            return None
+        average_accuracy = sum(item.accuracy for item in rounds) / len(rounds)
+        average_seconds = sum(item.elapsed_seconds for item in rounds) / len(rounds)
+        chronological = tuple(reversed(rounds))
+        trend = chronological[-1].accuracy - chronological[0].accuracy
+        return PerformanceSummary(
+            rounds=rounds,
+            average_accuracy=average_accuracy,
+            best_accuracy=max(item.accuracy for item in rounds),
+            average_seconds=average_seconds,
+            best_score=max(item.score for item in rounds),
+            accuracy_trend=trend,
+        )
+
+    def leaderboard(self, definition_hash: str, limit: int = 5) -> list[LeaderboardEntry]:
+        """Return each player's best round, restricted to one exact game definition."""
+
+        if limit <= 0:
+            raise ValueError("Das Bestenlisten-Limit muss positiv sein.")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT s.player_id, p.name, s.correct, s.total, s.elapsed_seconds
+                   FROM round_statistics AS s
+                   JOIN players AS p ON p.id = s.player_id
+                   WHERE s.definition_hash = ?""",
+                (definition_hash,),
+            ).fetchall()
+        best_by_player: dict[int, tuple[str, int, float, float]] = {}
+        for row in rows:
+            statistic = RoundStatistic(
+                player_id=int(row["player_id"]),
+                game_id="leaderboard",
+                game_name="Bestenliste",
+                definition_hash=definition_hash,
+                correct=int(row["correct"]),
+                total=int(row["total"]),
+                elapsed_seconds=float(row["elapsed_seconds"]),
+            )
+            candidate = (
+                str(row["name"]),
+                statistic.score,
+                statistic.accuracy,
+                statistic.elapsed_seconds,
+            )
+            previous = best_by_player.get(statistic.player_id)
+            if previous is None or (candidate[1], candidate[2], -candidate[3]) > (
+                previous[1],
+                previous[2],
+                -previous[3],
+            ):
+                best_by_player[statistic.player_id] = candidate
+        ordered = sorted(best_by_player.values(), key=lambda item: (-item[1], -item[2], item[3]))
+        return [
+            LeaderboardEntry(rank, name, score, accuracy, elapsed)
+            for rank, (name, score, accuracy, elapsed) in enumerate(ordered[:limit], start=1)
+        ]
