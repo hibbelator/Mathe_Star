@@ -11,11 +11,12 @@ from collections.abc import Callable
 
 import flet as ft
 
+from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
 from math_game.app.stats import RoundStatistic, StatisticsRepository
 from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
-from math_game.core.models import OperandRange
+from math_game.core.models import DefinitionHash, OperandRange
 from math_game.core.presets import DefinedGame, GameRepository, OperationWeights
 from math_game.core.task import ArithmeticTask
 from math_game.generators import DefinedGameTaskGenerator
@@ -37,6 +38,8 @@ class MathAdventureApp:
         self.page = page
         self.games = GameRepository()
         self.statistics = StatisticsRepository()
+        self.players = PlayerRepository()
+        self.active_player: Player | None = next(iter(self.players.all()), None)
         self.view = "menu"
         self.session: RoundSession | None = None
         self.active_game: DefinedGame | None = None
@@ -47,6 +50,7 @@ class MathAdventureApp:
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
         self.editor_error = ""
+        self.player_error = ""
         self.special_mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode | None = None
         self.special_generator: DefinedGameTaskGenerator | None = None
         self.special_task: ArithmeticTask | None = None
@@ -76,6 +80,8 @@ class MathAdventureApp:
             content = self._game_editor_view()
         elif self.view == "stats":
             content = self._stats_view()
+        elif self.view == "players":
+            content = self._players_view()
         else:
             content = self._main_menu_view()
         self.page.add(
@@ -97,6 +103,16 @@ class MathAdventureApp:
                 ft.Text("🧮 Mathe-Abenteuer", size=36, weight=ft.FontWeight.BOLD, color=INK),
                 ft.Text("Wähle aus, was du als Nächstes tun möchtest.", color=MUTED, size=16),
                 ft.Divider(color="#E6EAFE"),
+                ft.Text(
+                    f"Spieler: {self.active_player.name}"
+                    if self.active_player
+                    else "Bitte zuerst einen Spieler anlegen.",
+                    color=SUCCESS if self.active_player else WARNING,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                self._action_button(
+                    "👧 Spieler auswählen / anlegen", lambda _: self._navigate("players")
+                ),
                 self._action_button(
                     "🎮 Definierte Spiele spielen", lambda _: self._navigate("play")
                 ),
@@ -256,7 +272,7 @@ class MathAdventureApp:
         )
 
     def _stats_view(self) -> ft.Column:
-        statistics = sorted(self.statistics.load(), key=lambda item: item.played_at, reverse=True)
+        statistics = self.statistics.load(self.active_player.id) if self.active_player else []
         controls: list[ft.Control] = []
         if not statistics:
             controls.append(
@@ -270,14 +286,59 @@ class MathAdventureApp:
                     title=ft.Text(item.game_name, weight=ft.FontWeight.BOLD),
                     subtitle=ft.Text(
                         f"{item.correct}/{item.total} richtig · {item.accuracy:.0%} · "
-                        f"{item.elapsed_seconds:.1f} s"
+                        f"{item.elapsed_seconds:.1f} s · "
+                        f"Vergleichsgruppe {item.definition_hash[-8:]}"
                     ),
                     trailing=ft.Text(item.played_at[:10]),
                 )
             )
         return self._section(
-            "📊 Statistik / Auswertung", "Trefferquoten, Zeiten und bisherige Runden.", controls
+            "📊 Statistik / Auswertung",
+            "Nur Runden desselben Spielers und exakt derselben Spieldefinition "
+            "werden verglichen.",
+            controls,
         )
+
+    def _players_view(self) -> ft.Column:
+        name = ft.TextField(label="Name des Kindes")
+        image = ft.TextField(label="Bilddatei (optional)", hint_text="z. B. /Bilder/lina.png")
+        controls: list[ft.Control] = [name, image]
+        if self.player_error:
+            controls.append(ft.Text(self.player_error, color=ERROR))
+
+        def create(_: object) -> None:
+            try:
+                self.active_player = self.players.add(name.value or "", image.value or None)
+                self.player_error = ""
+                self._navigate("menu")
+            except ValueError as error:
+                self.player_error = str(error)
+                self.render()
+
+        controls.append(self._action_button("Spieler anlegen", create))
+        for player in self.players.all():
+            avatar: ft.Control = ft.CircleAvatar(content=ft.Text(player.name[:1].upper()))
+            if player.image_path:
+                avatar = ft.CircleAvatar(foreground_image_src=player.image_path)
+            controls.append(
+                ft.ListTile(
+                    leading=avatar,
+                    title=ft.Text(player.name, weight=ft.FontWeight.BOLD),
+                    trailing=ft.ElevatedButton(
+                        "Auswählen",
+                        on_click=lambda _, selected=player: self._select_player(selected),
+                    ),
+                )
+            )
+        return self._section(
+            "👧 Spieler",
+            "Ein eigenes Profil hält Ergebnisse und Vergleiche sauber getrennt.",
+            controls,
+        )
+
+    def _select_player(self, player: Player) -> None:
+        self.active_player = player
+        self._navigate("menu")
 
     def _section(self, title: str, subtitle: str, controls: list[ft.Control]) -> ft.Column:
         return ft.Column(
@@ -314,6 +375,13 @@ class MathAdventureApp:
             ),
             ft.ProgressBar(value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"),
             ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK),
+            ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                controls=[
+                    ft.TextButton("↻ Neustarten", on_click=lambda _: self._confirm_restart()),
+                    ft.TextButton("⌂ Zum Menü", on_click=lambda _: self._confirm_menu()),
+                ],
+            ),
         ]
         feedback = session.feedback
         self.answer_field = ft.TextField(
@@ -351,6 +419,11 @@ class MathAdventureApp:
         )
 
     def _start_special_mode(self, mode_key: str) -> None:
+        if self.active_player is None:
+            self.view = "players"
+            self.player_error = "Lege bitte zuerst einen Spieler an."
+            self.render()
+            return
         # The first-grade PluMi preset keeps the warm-up genuinely easy; the
         # regular PluMi range provides the challenge for the other variants.
         game = self.games.all_games()[4 if mode_key == "warm_up" else 3]
@@ -371,6 +444,7 @@ class MathAdventureApp:
             controller.start(now)
         self.special_mode = controller
         self.special_feedback = ""
+        self.round_started_at, self.statistic_saved = time.monotonic(), False
         self._next_special_task()
         self.render()
         if isinstance(controller, BlitzMode | WarmUpMode):
@@ -415,7 +489,13 @@ class MathAdventureApp:
         controls.extend(
             [
                 self._action_button("Antwort prüfen", self._submit_special_answer),
-                ft.TextButton("Runde abbrechen", on_click=lambda _: self._leave_special_mode()),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    controls=[
+                        ft.TextButton("↻ Neustarten", on_click=lambda _: self._confirm_restart()),
+                        ft.TextButton("⌂ Zum Menü", on_click=lambda _: self._confirm_menu()),
+                    ],
+                ),
             ]
         )
         return ft.Column(
@@ -462,6 +542,7 @@ class MathAdventureApp:
     def _special_finished_view(
         self, mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode
     ) -> ft.Column:
+        self._record_special_statistic(mode)
         if isinstance(mode, BlitzMode):
             result = (
                 f"{mode.correct_count} richtige Antworten · Session-Bestenliste {mode.leaderboard}"
@@ -587,6 +668,11 @@ class MathAdventureApp:
     def _start_game(self, game: DefinedGame | None) -> None:
         if game is None:
             return
+        if self.active_player is None:
+            self.view = "players"
+            self.player_error = "Lege bitte zuerst einen Spieler an."
+            self.render()
+            return
         self._cancel_auto_advance()
         definition = OperationDefinition(
             operation=ArithmeticOperation.ADDITION,
@@ -609,15 +695,48 @@ class MathAdventureApp:
         self.render()
 
     def _record_statistic(self) -> None:
-        if self.statistic_saved or self.active_game is None:
+        if self.statistic_saved or self.active_game is None or self.active_player is None:
             return
         session = self._active_session()
         self.statistics.add(
             RoundStatistic(
+                self.active_player.id,
                 self.active_game.identifier,
                 self.active_game.name,
+                self.active_game.definition_hash(),
                 session.correct_count,
                 session.task_count,
+                time.monotonic() - self.round_started_at,
+            )
+        )
+        self.statistic_saved = True
+
+    def _record_special_statistic(
+        self, mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode
+    ) -> None:
+        if self.statistic_saved or self.active_game is None or self.active_player is None:
+            return
+        if isinstance(mode, AccuracyMode):
+            correct, total = mode.correct_count, mode.answered_count
+        elif isinstance(mode, PluMiEndlessMode):
+            correct, total = mode.score, mode.score + mode.errors
+        elif isinstance(mode, BlitzMode):
+            correct, total = mode.correct_count, mode.correct_count + mode.wrong_count
+        else:
+            correct, total = mode.correct_count, mode.attempted_count
+        if total <= 0:
+            return
+        comparison_hash = DefinitionHash.from_payload(
+            {"game": self.active_game.definition_hash(), "special_mode": type(mode).__name__}
+        ).as_uri()
+        self.statistics.add(
+            RoundStatistic(
+                self.active_player.id,
+                self.active_game.identifier,
+                f"{self.active_game.name} · {type(mode).__name__}",
+                comparison_hash,
+                correct,
+                total,
                 time.monotonic() - self.round_started_at,
             )
         )
@@ -629,8 +748,58 @@ class MathAdventureApp:
         )
 
     def _navigate(self, view: str) -> None:
+        self._cancel_special_deadline()
+        self.special_mode = self.special_generator = self.special_task = None
         self.session, self.active_game, self.view = None, None, view
         self.render()
+
+    def _confirm_restart(self) -> None:
+        game = self.active_game
+        if game is None:
+            return
+        mode = self.special_mode
+
+        def restart() -> None:
+            if isinstance(mode, BlitzMode):
+                self._start_special_mode("blitz")
+            elif isinstance(mode, AccuracyMode):
+                self._start_special_mode("accuracy")
+            elif isinstance(mode, PluMiEndlessMode):
+                self._start_special_mode("endless")
+            elif isinstance(mode, WarmUpMode):
+                self._start_special_mode("warm_up")
+            else:
+                self._start_game(game)
+
+        self._show_confirmation(
+            "Spiel neu starten?",
+            "Der aktuelle Fortschritt geht verloren. Möchtest du wirklich neu beginnen?",
+            restart,
+        )
+
+    def _confirm_menu(self) -> None:
+        self._show_confirmation(
+            "Zurück zum Menü?",
+            "Der aktuelle Fortschritt geht verloren. Möchtest du das Spiel verlassen?",
+            lambda: self._navigate("menu"),
+        )
+
+    def _show_confirmation(self, title: str, message: str, action: Callable[[], None]) -> None:
+        dialog = ft.AlertDialog(modal=True, title=ft.Text(title), content=ft.Text(message))
+
+        def close(_: object) -> None:
+            dialog.open = False
+            self.page.update()
+
+        def confirm(_: object) -> None:
+            dialog.open = False
+            action()
+
+        dialog.actions = [
+            ft.TextButton("Abbrechen", on_click=close),
+            ft.ElevatedButton("Ja, fortfahren", on_click=confirm),
+        ]
+        self.page.open(dialog)
 
     def _choose_another(self) -> None:
         self.session, self.active_game, self.view = None, None, "play"

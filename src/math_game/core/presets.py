@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import cast
 
+from math_game.app.database import AppDatabase
 from math_game.core.contracts import GameMode
+from math_game.core.models import DefinitionHash
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,14 @@ class DefinedGame:
         data["mode"] = self.mode.value
         data["allowed_tables"] = list(self.allowed_tables)
         return data
+
+    def definition_hash(self) -> str:
+        """Identify the complete playable rules, independently of display name."""
+
+        payload = self.to_dict()
+        for presentation_field in ("identifier", "name", "builtin"):
+            payload.pop(presentation_field)
+        return DefinitionHash.from_payload(payload).as_uri()
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> DefinedGame:
@@ -157,17 +166,16 @@ EXCEL_PRESETS: tuple[DefinedGame, ...] = (
 
 @dataclass(slots=True)
 class GameRepository:
-    """Combine immutable built-ins with custom definitions stored as JSON."""
+    """Combine immutable built-ins with custom definitions stored in SQLite."""
 
-    path: Path = field(default_factory=lambda: Path.home() / ".math_game" / "games.json")
+    database: AppDatabase = field(default_factory=AppDatabase)
 
     def custom_games(self) -> list[DefinedGame]:
-        if not self.path.exists():
-            return []
-        raw: object = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            raise ValueError("Die Datei mit Spieldefinitionen muss eine Liste enthalten.")
-        return [DefinedGame.from_dict(item) for item in cast(list[dict[str, object]], raw)]
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT definition_json FROM games ORDER BY identifier"
+            ).fetchall()
+        return [DefinedGame.from_dict(json.loads(str(row["definition_json"]))) for row in rows]
 
     def all_games(self) -> list[DefinedGame]:
         return [*EXCEL_PRESETS, *self.custom_games()]
@@ -175,20 +183,20 @@ class GameRepository:
     def save(self, game: DefinedGame) -> None:
         if game.builtin:
             raise ValueError("Excel-Presets können nicht überschrieben werden.")
-        games = [
-            existing for existing in self.custom_games() if existing.identifier != game.identifier
-        ]
-        games.append(game)
-        self._write(games)
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO games(identifier, definition_json, definition_hash)
+                   VALUES (?, ?, ?) ON CONFLICT(identifier) DO UPDATE SET
+                   definition_json=excluded.definition_json,
+                   definition_hash=excluded.definition_hash,
+                   updated_at=CURRENT_TIMESTAMP""",
+                (
+                    game.identifier,
+                    json.dumps(game.to_dict(), ensure_ascii=False),
+                    game.definition_hash(),
+                ),
+            )
 
     def delete(self, identifier: str) -> None:
-        self._write([game for game in self.custom_games() if game.identifier != identifier])
-
-    def _write(self, games: list[DefinedGame]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps([game.to_dict() for game in games], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        with self.database.connect() as connection:
+            connection.execute("DELETE FROM games WHERE identifier = ?", (identifier,))
