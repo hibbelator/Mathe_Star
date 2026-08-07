@@ -1,8 +1,8 @@
-import json
 from pathlib import Path
 
 import pytest
 
+from math_game.app.database import AppDatabase
 from math_game.core.contracts import GameMode
 from math_game.core.presets import EXCEL_PRESETS, DefinedGame, GameRepository, OperationWeights
 
@@ -31,7 +31,7 @@ def test_weights_require_a_non_negative_active_operation() -> None:
 
 
 def test_repository_round_trip_and_replace(tmp_path: Path) -> None:
-    repository = GameRepository(tmp_path / "games.json")
+    repository = GameRepository(AppDatabase(tmp_path / "games.sqlite3"))
     game = DefinedGame(
         "mein-spiel",
         "Mein Spiel",
@@ -51,7 +51,6 @@ def test_repository_round_trip_and_replace(tmp_path: Path) -> None:
 
     assert repository.custom_games() == [replacement]
     assert len(repository.all_games()) == len(EXCEL_PRESETS) + 1
-    assert json.loads(repository.path.read_text())[0]["name"] == "Neuer Name"
 
 
 def test_multiplication_needs_tables() -> None:

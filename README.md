@@ -22,11 +22,21 @@ Sitzung 3 macht aus dem fachlichen Fundament erstmals ein bedienbares Produktink
 
 ## Bewusst noch nicht enthalten
 
-- Keine SQLite-Persistenz.
 - Keine Generatoren für Multiplikation oder Division.
 - Keine konkreten State-Machines für Spielmodi.
 
 Diese Begrenzung ist absichtlich: Spätere Sitzungen können dadurch fachliche Funktionen ergänzen, ohne das Fundament neu verhandeln zu müssen.
+
+Spielerprofile, eigene Spieldefinitionen und Rundenergebnisse werden lokal in
+`~/.math_game/math_game.sqlite3` gespeichert. Ein Profil besteht aus einem Namen und optional
+einem Bildpfad. Statistische Bestleistungen werden über einen Hash der vollständigen
+Spielregeln gruppiert; dadurch fließen weder andere Spieler noch nur ähnlich benannte oder
+nachträglich veränderte Spiele in einen Vergleich ein.
+
+Direkt nach jeder beendeten Runde erscheint ein Ergebnis-Dashboard mit Score, persönlicher
+Bestquote, Durchschnittszeit und Entwicklung. Die aufklappbare Detailansicht ergänzt den
+Rundenverlauf und eine Bestenliste. Auch dort bleibt die Vergleichsbasis streng auf dieselbe
+Spieldefinition begrenzt, während die persönlichen Kennzahlen nur das aktive Profil betreffen.
 
 ## Weg zur ersten Beta
 
