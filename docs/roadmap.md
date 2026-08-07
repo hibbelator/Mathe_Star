@@ -59,4 +59,45 @@ Danach wird der gesamte Beta-Pfad auf leere Eingaben, ungültige Zeichen, wieder
 
 ## Priorität nach der Beta
 
-Erst das Feedback aus der Beta entscheidet die nächste Reihenfolge. Wahrscheinliche Kandidaten sind lokale Fortschrittsspeicherung, Multiplikation, ein gezielter Fehlerwiederholungsmodus und anschließend Division mit einer eigenen fachlichen Spezifikation. Ein Android-Build wird dann priorisiert, wenn die Desktop- beziehungsweise lokale Flet-Version ein überzeugendes Spielgefühl nachweist.
+Die Erweiterungen werden nach ihrer Abhängigkeit von SQLite (ADR-010) und ihrem
+Implementierungsaufwand geordnet. Jeder Modus bleibt entsprechend Abschnitt 3.2
+des Projektplans ein eigenes Modul mit eigener State-Machine. Es gibt weder eine
+gemeinsame Modus-Basisklasse noch eine geteilte State-Machine. Dadurch kann sich
+beispielsweise die Abbruchlogik von PluMi Endless verändern, ohne die Zeitlogik
+der Blitzrunde zu gefährden.
+
+### Phase 1 – ohne SQLite-Abhängigkeit
+
+- [x] **Blitzrunde:** 30 bis 60 Sekunden Tempo-Fokus und ein Leaderboard, das
+  bewusst nur für die Lebensdauer des Modusobjekts existiert.
+- [x] **Genauigkeits-Modus:** feste Aufgabenanzahl ohne Zeitdruck; allein die
+  Trefferquote bewertet die Runde.
+- [x] **PluMi Endless:** unbegrenzte Aufgabenanzahl, Highscore und Ende nach dem
+  dritten Fehler.
+- [x] **Warm-up-Modus:** genau 60 Sekunden leichte Einstiegsaufgaben, danach ein
+  expliziter Übergabezustand für das eigentliche Spiel.
+
+Die vier Flet-unabhängigen Ablaufmodule und ihre Unit-Tests sind implementiert.
+Die Spieleauswahl bietet für jeden Modus einen direkten Start und eine eigene
+Spielansicht; die Oberfläche adaptiert die vier Controller lediglich und bildet
+keine neue universelle State-Machine.
+
+### Phase 2 – nach der SQLite-Einführung gemäß ADR-010
+
+- [ ] **Ghost-Modus:** Vergleich mit der persönlichen besten Zeit oder Quote
+  der Vorwoche.
+- [ ] **Personal-Best pro Rechenart:** getrennte Rekorde für Addition,
+  Subtraktion, Multiplikation und Division.
+- [ ] **Tages-Streak:** Übungstage in Folge einschließlich eines begrenzten
+  Freeze-Tokens.
+- [ ] **Heatmap Stärken/Schwächen:** Fehlerhäufigkeiten nach Zahlenbereich und
+  Faktor.
+- [ ] **Spaced Repetition:** Wiederholung falscher Aufgaben nach 1, 3 und 7
+  Tagen; dies konkretisiert den bereits geplanten Fehlerwiederholungsmodus.
+- [ ] **Trendlinie „Richtige pro Minute“:** zeitliche Entwicklung statt bloßer
+  Anzeige der zuletzt abgeschlossenen Runde.
+
+Phase 2 bleibt bewusst gesperrt, bis Sessions und einzelne Aufgabenversuche in
+SQLite gespeichert werden. Eine vorgezogene Umsetzung auf Basis der aktuellen
+JSON-Dateien würde eine zweite, später zu migrierende Datenschicht schaffen und
+damit ADR-010 widersprechen.

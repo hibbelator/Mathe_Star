@@ -17,8 +17,14 @@ from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import OperandRange
 from math_game.core.presets import DefinedGame, GameRepository, OperationWeights
+from math_game.core.task import ArithmeticTask
 from math_game.generators import DefinedGameTaskGenerator
 from math_game.generators.random_source import PythonRandomSource
+from math_game.modes import AccuracyMode, BlitzMode, PluMiEndlessMode, WarmUpMode
+from math_game.modes.accuracy import AccuracyPhase
+from math_game.modes.blitz import BlitzPhase
+from math_game.modes.plumi_endless import EndlessPhase
+from math_game.modes.warm_up import WarmUpPhase
 
 BACKGROUND, INK, PRIMARY, SUCCESS = "#F4F7FF", "#17223B", "#536DFE", "#168F68"
 WARNING, ERROR, CARD, MUTED = "#E67E22", "#C2415B", "#FFFFFF", "#52607A"
@@ -36,10 +42,15 @@ class MathAdventureApp:
         self.active_game: DefinedGame | None = None
         self.answer_field: ft.TextField | None = None
         self.auto_advance_timer: threading.Timer | None = None
+        self.special_deadline_timer: threading.Timer | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
         self.editor_error = ""
+        self.special_mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode | None = None
+        self.special_generator: DefinedGameTaskGenerator | None = None
+        self.special_task: ArithmeticTask | None = None
+        self.special_feedback = ""
         page.title = "Mathe-Abenteuer"
         page.bgcolor, page.padding = BACKGROUND, 24
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
@@ -49,7 +60,9 @@ class MathAdventureApp:
     def render(self) -> None:
         self._cancel_auto_advance()
         self.page.clean()
-        if self.session is not None and self.session.phase not in {
+        if self.special_mode is not None:
+            content = self._special_mode_view()
+        elif self.session is not None and self.session.phase not in {
             RoundPhase.READY,
             RoundPhase.FINISHED,
         }:
@@ -98,7 +111,19 @@ class MathAdventureApp:
         )
 
     def _play_defined_games_view(self) -> ft.Column:
-        cards: list[ft.Control] = []
+        cards: list[ft.Control] = [
+            ft.Text("Neue Spielmodi", size=22, weight=ft.FontWeight.BOLD),
+            ft.ResponsiveRow(
+                controls=[
+                    self._mode_card("⚡ Blitzrunde", "45 Sekunden Vollgas", "blitz"),
+                    self._mode_card("🎯 Genauigkeit", "Ohne Zeitdruck", "accuracy"),
+                    self._mode_card("♾️ PluMi Endless", "Bis zum 3. Fehler", "endless"),
+                    self._mode_card("🌤️ Warm-up", "60 Sekunden locker starten", "warm_up"),
+                ]
+            ),
+            ft.Divider(),
+            ft.Text("Definierte Spiele", size=22, weight=ft.FontWeight.BOLD),
+        ]
         for game in self.games.all_games():
             weights = game.weights
             details = (
@@ -131,6 +156,23 @@ class MathAdventureApp:
             )
         return self._section(
             "🎮 Definierte Spiele", "Excel-Presets und eigene Spiele direkt starten.", cards
+        )
+
+    def _mode_card(self, title: str, description: str, mode_key: str) -> ft.Container:
+        return ft.Container(
+            col={"sm": 12, "md": 6},
+            padding=14,
+            border=ft.border.all(1, "#DCE2FF"),
+            border_radius=14,
+            content=ft.Column(
+                controls=[
+                    ft.Text(title, size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(description, color=MUTED),
+                    ft.ElevatedButton(
+                        "Starten", on_click=lambda _: self._start_special_mode(mode_key)
+                    ),
+                ]
+            ),
         )
 
     def _game_editor_view(self) -> ft.Column:
@@ -307,6 +349,177 @@ class MathAdventureApp:
         return ft.Column(
             horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=18, controls=controls
         )
+
+    def _start_special_mode(self, mode_key: str) -> None:
+        # The first-grade PluMi preset keeps the warm-up genuinely easy; the
+        # regular PluMi range provides the challenge for the other variants.
+        game = self.games.all_games()[4 if mode_key == "warm_up" else 3]
+        self.active_game = game
+        self.special_generator = DefinedGameTaskGenerator(PythonRandomSource(), game)
+        now = time.monotonic()
+        if mode_key == "blitz":
+            controller: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode = BlitzMode(45)
+            controller.start(now)
+        elif mode_key == "accuracy":
+            controller = AccuracyMode(20)
+            controller.start()
+        elif mode_key == "endless":
+            controller = PluMiEndlessMode()
+            controller.start()
+        else:
+            controller = WarmUpMode()
+            controller.start(now)
+        self.special_mode = controller
+        self.special_feedback = ""
+        self._next_special_task()
+        self.render()
+        if isinstance(controller, BlitzMode | WarmUpMode):
+            self.special_deadline_timer = threading.Timer(
+                controller.duration_seconds, self._special_deadline_reached
+            )
+            self.special_deadline_timer.start()
+
+    def _special_mode_view(self) -> ft.Column:
+        mode = self.special_mode
+        task = self.special_task
+        if mode is None or task is None:
+            raise RuntimeError("special mode requires a current task")
+        finished = self._special_finished(mode)
+        if finished:
+            return self._special_finished_view(mode)
+        if isinstance(mode, BlitzMode):
+            status = (
+                f"Noch {mode.seconds_left(time.monotonic()):.0f} s · {mode.correct_count} richtig"
+            )
+        elif isinstance(mode, AccuracyMode):
+            status = f"{mode.answered_count}/{mode.task_count} · Quote {mode.accuracy:.0%}"
+        elif isinstance(mode, PluMiEndlessMode):
+            status = f"Highscore {mode.score} · Fehler {mode.errors}/3"
+        else:
+            status = f"Warm-up · {mode.correct_count}/{mode.attempted_count} richtig"
+        self.answer_field = ft.TextField(
+            label="Deine Antwort",
+            text_align=ft.TextAlign.CENTER,
+            text_size=28,
+            autofocus=True,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            on_submit=self._submit_special_answer,
+        )
+        controls: list[ft.Control] = [
+            ft.Text(status, color=MUTED, size=18),
+            ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK),
+            self.answer_field,
+        ]
+        if self.special_feedback:
+            controls.append(ft.Text(self.special_feedback, color=SUCCESS, size=18))
+        controls.extend(
+            [
+                self._action_button("Antwort prüfen", self._submit_special_answer),
+                ft.TextButton("Runde abbrechen", on_click=lambda _: self._leave_special_mode()),
+            ]
+        )
+        return ft.Column(
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=18, controls=controls
+        )
+
+    def _submit_special_answer(self, _: object) -> None:
+        if self.answer_field is None or self.special_task is None or self.special_mode is None:
+            return
+        try:
+            answer = int((self.answer_field.value or "").strip())
+        except ValueError:
+            self.answer_field.error_text = "Die Antwort muss eine ganze Zahl sein."
+            self.page.update()
+            return
+        mode, expected, now = self.special_mode, self.special_task.expected_answer, time.monotonic()
+        try:
+            if isinstance(mode, BlitzMode | WarmUpMode):
+                correct = mode.submit(answer, expected, now)
+            else:
+                correct = mode.submit(answer, expected)
+        except RuntimeError:
+            self.render()
+            return
+        self.special_feedback = "✓ Richtig!" if correct else f"✕ Richtig wäre {expected}."
+        if not self._special_finished(mode):
+            self._next_special_task()
+        self.render()
+
+    def _special_finished(
+        self, mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode
+    ) -> bool:
+        now = time.monotonic()
+        if isinstance(mode, BlitzMode):
+            mode.tick(now)
+            return mode.phase is BlitzPhase.FINISHED
+        if isinstance(mode, WarmUpMode):
+            mode.tick(now)
+            return mode.phase is WarmUpPhase.MAIN_GAME_READY
+        if isinstance(mode, AccuracyMode):
+            return mode.phase is AccuracyPhase.FINISHED
+        return mode.phase is EndlessPhase.FINISHED
+
+    def _special_finished_view(
+        self, mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode
+    ) -> ft.Column:
+        if isinstance(mode, BlitzMode):
+            result = (
+                f"{mode.correct_count} richtige Antworten · Session-Bestenliste {mode.leaderboard}"
+            )
+        elif isinstance(mode, AccuracyMode):
+            result = f"Trefferquote {mode.accuracy:.0%} ({mode.correct_count}/{mode.task_count})"
+        elif isinstance(mode, PluMiEndlessMode):
+            result = f"Highscore {mode.score} · beste Serie {mode.best_streak}"
+        else:
+            result = f"Warm-up geschafft: {mode.correct_count} richtige Antworten"
+        action_label = "Hauptspiel starten" if isinstance(mode, WarmUpMode) else "Zur Spieleauswahl"
+        action = (
+            self._start_main_game_after_warm_up
+            if isinstance(mode, WarmUpMode)
+            else self._leave_special_mode
+        )
+        return ft.Column(
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=18,
+            controls=[
+                ft.Text("🏁 Modus beendet", size=34, weight=ft.FontWeight.BOLD),
+                ft.Text(result, size=20, color=MUTED),
+                self._action_button(action_label, lambda _: action()),
+            ],
+        )
+
+    def _next_special_task(self) -> None:
+        if self.special_generator is None:
+            raise RuntimeError("special generator is not configured")
+        definition = OperationDefinition(
+            operation=ArithmeticOperation.ADDITION,
+            left=OperandRange(1, 20),
+            right=OperandRange(1, 20),
+        )
+        self.special_task = self.special_generator.generate(definition)
+
+    def _leave_special_mode(self) -> None:
+        self._cancel_special_deadline()
+        self.special_mode = self.special_generator = self.special_task = None
+        self.answer_field = None
+        self.view = "play"
+        self.render()
+
+    def _start_main_game_after_warm_up(self) -> None:
+        self._cancel_special_deadline()
+        game = self.active_game
+        self.special_mode = self.special_generator = self.special_task = None
+        self._start_game(game)
+
+    def _special_deadline_reached(self) -> None:
+        if self.special_mode is not None:
+            self._special_finished(self.special_mode)
+            self.render()
+
+    def _cancel_special_deadline(self) -> None:
+        if self.special_deadline_timer is not None:
+            self.special_deadline_timer.cancel()
+            self.special_deadline_timer = None
 
     def _feedback(self, text: str, color: str, background: str) -> ft.Container:
         return ft.Container(

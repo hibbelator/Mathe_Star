@@ -26,3 +26,21 @@ Der funktionale Durchstich und die automatisierten Tests sind abgeschlossen. Pyt
 Sobald Flet in einer ausführbaren Umgebung verfügbar ist, beginnt Sitzung 4 mit einem visuellen Audit und aktuellen Screenshots des implementierten Pfads. Anschließend liegt der Schwerpunkt auf Interaktionsgefühl und Motivation: klare visuelle Hierarchie, großzügige Touch-Ziele, responsive Größen, Fokusführung, Feedback nicht nur über Farbe, eine sichtbare Erfolgsserie und zurückhaltende Übergänge.
 
 Die bestehende Rundensteuerung soll dabei nur erweitert werden, wenn eine konkrete sichtbare Anforderung dies verlangt. Neue Rechenarten, Persistenz und generische Pluginarbeit dürfen Sitzung 4 nicht verdrängen. Nach Abschluss dieses Pakets verbleibt gemäß Roadmap nur noch Sitzung 5 für Ergebnispräsentation, Härtung und Beta-Abnahme.
+
+## Aktualisierung 2026-08-07
+
+Die Post-Beta-Roadmap ist nun in zwei technisch begründete Phasen aufgeteilt.
+Blitzrunde, Genauigkeits-Modus, PluMi Endless und Warm-up besitzen jeweils ein
+eigenes Flet-unabhängiges Ablaufmodul unter `src/math_game/modes`; bewusst gibt
+es keine gemeinsame Basisklasse oder State-Machine. Die fünf neuen Ablauf-Tests
+sind grün. Alle vier Varianten können aus der Spieleauswahl gestartet und in
+einer dafür vorgesehenen Flet-Spielansicht gespielt werden. Das Warm-up reicht
+nach 60 Sekunden ausdrücklich an das ausgewählte Hauptspiel weiter.
+
+Verlaufsabhängige Ideen bleiben gemäß ADR-010 gesperrt, bis eine getestete
+SQLite-Persistenz für Sessions und Aufgabenversuche existiert. Insbesondere darf
+die derzeitige kleine JSON-Statistik nicht zur Grundlage für Ghost-Modus,
+Streaks, Heatmaps, Spaced Repetition oder Trendanalysen ausgebaut werden.
+
+Letzter Qualitätslauf: `pytest` mit 30 bestandenen Tests sowie `ruff check .`,
+`pyright` und `git diff --check` ohne Befund.
