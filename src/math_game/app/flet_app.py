@@ -13,7 +13,13 @@ import flet as ft
 
 from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
-from math_game.app.stats import RaceCompetitor, RoundStatistic, ScoreEvent, StatisticsRepository
+from math_game.app.stats import (
+    RaceCompetitor,
+    RoundStatistic,
+    ScoreEvent,
+    StatisticsRepository,
+    computer_competitor,
+)
 from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
@@ -63,6 +69,10 @@ class MathAdventureApp:
         self.special_feedback = ""
         page.title = "Mathe-Abenteuer"
         page.bgcolor, page.padding = BACKGROUND, 24
+        # The central card can be taller than a small laptop or phone viewport.
+        # Scrolling the page (rather than only selected subsections) keeps every
+        # menu action and dialog entry reachable.
+        page.scroll = ft.ScrollMode.AUTO
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
         page.on_keyboard_event = self._on_keyboard
         self.render()
@@ -154,8 +164,6 @@ class MathAdventureApp:
             ft.Text("Definierte Spiele", size=22, weight=ft.FontWeight.BOLD),
         ]
         for game in self.games.all_games():
-            available_rivals = self.statistics.race_competitors(game.definition_hash(), 8)
-            can_chase = bool(available_rivals)
             weights = game.weights
             details = (
                 f"Gewichte +{weights.addition} −{weights.subtraction} ×{weights.multiplication} "
@@ -188,12 +196,7 @@ class MathAdventureApp:
                                     ),
                                     ft.TextButton(
                                         "🏁 Rennen starten",
-                                        disabled=not can_chase,
-                                        tooltip=(
-                                            "Tritt live gegen deine beste Runde an"
-                                            if can_chase
-                                            else "Nach einer gespielten Runde verfügbar"
-                                        ),
+                                        tooltip="Gegen Computer oder vergangene Läufe antreten",
                                         on_click=lambda _, selected=game: self._configure_race(
                                             selected
                                         ),
@@ -419,6 +422,9 @@ class MathAdventureApp:
         if task is None:
             raise RuntimeError("task view requires an active task")
         current_points = self.live_score_events[-1].points_after if self.live_score_events else 0
+        wrong_count = len(session.results) - session.correct_count
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        timed = bool(self.active_game and self.active_game.duration_seconds)
         controls: list[ft.Control] = [
             ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -428,10 +434,24 @@ class MathAdventureApp:
                         f"Aufgabe {session.task_number}/{session.task_count}",
                         color=MUTED,
                     ),
-                    ft.Text(
-                        f"Richtig: {session.correct_count} · Punkte: {current_points}",
-                        color=SUCCESS,
-                        weight=ft.FontWeight.BOLD,
+                    ft.Row(
+                        spacing=12,
+                        controls=[
+                            ft.Text(
+                                f"✓ {session.correct_count}",
+                                color=SUCCESS,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(f"✕ {wrong_count}", color=ERROR, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                f"⭐ {current_points} P", color=PRIMARY, weight=ft.FontWeight.BOLD
+                            ),
+                            ft.Text(
+                                f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s",
+                                color=WARNING if timed else MUTED,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
                     ),
                 ],
             ),
@@ -1041,22 +1061,41 @@ class MathAdventureApp:
         )
 
     def _configure_race(self, game: DefinedGame) -> None:
-        available = self.statistics.race_competitors(game.definition_hash(), 8)
-        if not available:
-            return
-        default_count = min(3, len(available))
-        opponent_count = ft.Dropdown(
-            label="Anzahl aufgezeichneter Gegner",
-            value=str(default_count),
+        recorded = self.statistics.race_competitors(game.definition_hash(), 8)
+        own_summary = (
+            self.statistics.summary(self.active_player.id, game.definition_hash())
+            if self.active_player
+            else None
+        )
+        source = ft.Dropdown(
+            label="Gegnertyp",
+            value="computer_static",
             options=[
-                ft.dropdown.Option(str(count), f"{count} Gegner")
-                for count in range(1, min(8, len(available)) + 1)
+                ft.dropdown.Option("computer_static", "Computer · statische Stärke"),
+                *(
+                    [ft.dropdown.Option("computer_history", "Computer · an meinem Ø orientiert")]
+                    if own_summary
+                    else []
+                ),
+                *(
+                    [ft.dropdown.Option("recorded", "Aufgezeichnete echte Läufe")]
+                    if recorded
+                    else []
+                ),
             ],
         )
-        automatic_target = max(1, max(item.statistic.score for item in available[:default_count]))
+        level = ft.Slider(min=1, max=10, divisions=9, value=5, label="Stufe {value}")
+        opponent_count = ft.Dropdown(
+            label="Anzahl Gegner",
+            value="3",
+            options=[ft.dropdown.Option(str(count), str(count)) for count in range(1, 6)],
+        )
+        variable = ft.Switch(
+            label="Unregelmäßig spielen (mit richtigen und falschen Antworten)", value=True
+        )
         target = ft.TextField(
-            label="Zielpunkte (leer = bestes Ergebnis)",
-            hint_text=str(automatic_target),
+            label="Festes Ergebnisziel",
+            value=str(game.correct_target or min(game.task_count or 20, 40)),
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         vehicle = ft.Dropdown(
@@ -1074,20 +1113,37 @@ class MathAdventureApp:
             ],
         )
         error_text = ft.Text("", color=ERROR)
+        history_note = ft.Text(
+            "✓ Persönliche Historie verfügbar: Stufe 5 liegt etwas unter deinem Durchschnitt."
+            if own_summary
+            else (
+                "🔒 Der persönliche Durchschnitt wird nach der ersten Runde dieses Spiels "
+                "freigeschaltet."
+            ),
+            color=SUCCESS if own_summary else MUTED,
+            size=12,
+        )
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("🏁 Dein Rennen zusammenstellen"),
+            title=ft.Text("🏁 Rennen gegen Computergegner"),
             content=ft.Container(
-                width=480,
+                width=520,
                 content=ft.Column(
                     tight=True,
+                    scroll=ft.ScrollMode.AUTO,
                     controls=[
                         ft.Text(
-                            "Standardmäßig treten die besten aufgezeichneten Läufe dieses "
-                            "exakten Spiels an. Du bestimmst Feld, Ziel und Fahrzeug.",
+                            "Stufen 1–10 entsprechen ungefähr P10 bis P90 einer erreichbaren "
+                            "Leistungsverteilung. Auch starke Gegner machen Fehler und wechseln "
+                            "ihr Tempo.",
                             color=MUTED,
                         ),
+                        source,
+                        history_note,
+                        ft.Text("Schwierigkeit", weight=ft.FontWeight.BOLD),
+                        level,
                         opponent_count,
+                        variable,
                         target,
                         vehicle,
                         error_text,
@@ -1102,23 +1158,45 @@ class MathAdventureApp:
 
         def start(_: object) -> None:
             try:
-                count = int(opponent_count.value or str(default_count))
-                selected = available[:count]
-                target_points = (
-                    int(target.value.strip())
-                    if target.value and target.value.strip()
-                    else max(1, max(item.statistic.score for item in selected))
-                )
+                count = int(opponent_count.value or "3")
+                target_points = int(target.value or "0")
+                selected_level = round(level.value or 5)
                 if target_points <= 0:
                     raise ValueError("Das Rennziel muss mindestens 1 Punkt sein.")
+                selected_source = source.value or "computer_static"
+                if selected_source == "recorded":
+                    competitors = recorded[:count]
+                else:
+                    if selected_source == "computer_history" and own_summary is None:
+                        raise ValueError("Für diesen Gegner fehlt noch eine eigene Runde.")
+                    baseline = (
+                        sum(item.score for item in own_summary.rounds) / len(own_summary.rounds)
+                        if selected_source == "computer_history" and own_summary
+                        else None
+                    )
+                    duration = float(game.duration_seconds or max(30, (game.task_count or 20) * 3))
+                    competitors = [
+                        computer_competitor(
+                            game.definition_hash(),
+                            level=max(1, min(10, selected_level + index - count // 2)),
+                            target_points=target_points,
+                            duration_seconds=duration,
+                            baseline_points=baseline,
+                            seed=index + target_points,
+                            variable=bool(variable.value),
+                        )
+                        for index in range(count)
+                    ]
+                if not competitors:
+                    raise ValueError("Keine aufgezeichneten Gegner verfügbar.")
             except ValueError as error:
-                error_text.value = str(error) or "Bitte gib eine gültige ganze Zahl ein."
+                error_text.value = str(error) or "Bitte prüfe die Eingaben."
                 self.page.update()
                 return
             dialog.open = False
             self._start_game(
                 game,
-                competitors=selected,
+                competitors=competitors,
                 target_points=target_points,
                 race_vehicle=vehicle.value or "🚀",
             )
