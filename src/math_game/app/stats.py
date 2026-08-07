@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from math_game.app.database import AppDatabase
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreEvent:
+    elapsed_seconds: float
+    correct: bool
+    points_after: int
+
+    def __post_init__(self) -> None:
+        if self.elapsed_seconds < 0:
+            raise ValueError("Der Ereigniszeitpunkt darf nicht negativ sein.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +30,8 @@ class RoundStatistic:
     total: int
     elapsed_seconds: float
     played_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    events: tuple[ScoreEvent, ...] = ()
+    score_value: int | None = None
 
     def __post_init__(self) -> None:
         if self.correct < 0 or self.total <= 0 or self.correct > self.total:
@@ -33,6 +47,8 @@ class RoundStatistic:
     def score(self) -> int:
         """Return a child-friendly score comparable within one game definition."""
 
+        if self.score_value is not None:
+            return self.score_value
         accuracy_points = round(self.accuracy * 1000)
         task_points = self.correct * 25
         time_penalty = min(round(self.elapsed_seconds), accuracy_points + task_points)
@@ -60,13 +76,21 @@ class LeaderboardEntry:
     elapsed_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class RaceCompetitor:
+    """One recorded run selected as a live race opponent."""
+
+    player_name: str
+    statistic: RoundStatistic
+
+
 @dataclass(slots=True)
 class StatisticsRepository:
     database: AppDatabase = field(default_factory=AppDatabase)
 
     def load(self, player_id: int | None = None) -> list[RoundStatistic]:
         query = """SELECT player_id, game_id, game_name, definition_hash, correct, total,
-                   elapsed_seconds, played_at FROM round_statistics"""
+                   elapsed_seconds, played_at, events_json, score_value FROM round_statistics"""
         parameters: tuple[object, ...] = ()
         if player_id is not None:
             query += " WHERE player_id = ?"
@@ -74,14 +98,29 @@ class StatisticsRepository:
         query += " ORDER BY played_at DESC, id DESC"
         with self.database.connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
-        return [RoundStatistic(**dict(row)) for row in rows]
+        return [
+            RoundStatistic(
+                player_id=int(row["player_id"]),
+                game_id=str(row["game_id"]),
+                game_name=str(row["game_name"]),
+                definition_hash=str(row["definition_hash"]),
+                correct=int(row["correct"]),
+                total=int(row["total"]),
+                elapsed_seconds=float(row["elapsed_seconds"]),
+                played_at=str(row["played_at"]),
+                events=tuple(ScoreEvent(**event) for event in json.loads(row["events_json"])),
+                score_value=None if row["score_value"] is None else int(row["score_value"]),
+            )
+            for row in rows
+        ]
 
     def add(self, statistic: RoundStatistic) -> None:
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO round_statistics(
                     player_id, game_id, game_name, definition_hash, correct, total,
-                    elapsed_seconds, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    elapsed_seconds, played_at, events_json, score_value)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     statistic.player_id,
                     statistic.game_id,
@@ -91,6 +130,17 @@ class StatisticsRepository:
                     statistic.total,
                     statistic.elapsed_seconds,
                     statistic.played_at,
+                    json.dumps(
+                        [
+                            {
+                                "elapsed_seconds": event.elapsed_seconds,
+                                "correct": event.correct,
+                                "points_after": event.points_after,
+                            }
+                            for event in statistic.events
+                        ]
+                    ),
+                    statistic.score_value,
                 ),
             )
 
@@ -106,6 +156,57 @@ class StatisticsRepository:
             ):
                 best[item.definition_hash] = item
         return best
+
+    def best_round(self, player_id: int, definition_hash: str) -> RoundStatistic | None:
+        rounds = [item for item in self.load(player_id) if item.definition_hash == definition_hash]
+        return max(
+            rounds,
+            key=lambda item: (item.score, item.accuracy, -item.elapsed_seconds),
+            default=None,
+        )
+
+    def race_competitors(self, definition_hash: str, limit: int = 3) -> list[RaceCompetitor]:
+        """Return the strongest recorded event-based runs for an exact game."""
+
+        if not 1 <= limit <= 8:
+            raise ValueError("Ein Rennen braucht zwischen 1 und 8 Gegnern.")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT s.player_id, p.name, s.game_id, s.game_name, s.correct, s.total,
+                          s.elapsed_seconds, s.played_at, s.events_json, s.score_value
+                   FROM round_statistics AS s
+                   JOIN players AS p ON p.id = s.player_id
+                   WHERE s.definition_hash = ? AND s.events_json != '[]'""",
+                (definition_hash,),
+            ).fetchall()
+        competitors = [
+            RaceCompetitor(
+                player_name=str(row["name"]),
+                statistic=RoundStatistic(
+                    player_id=int(row["player_id"]),
+                    game_id=str(row["game_id"]),
+                    game_name=str(row["game_name"]),
+                    definition_hash=definition_hash,
+                    correct=int(row["correct"]),
+                    total=int(row["total"]),
+                    elapsed_seconds=float(row["elapsed_seconds"]),
+                    played_at=str(row["played_at"]),
+                    events=tuple(
+                        ScoreEvent(**event) for event in json.loads(str(row["events_json"]))
+                    ),
+                    score_value=(None if row["score_value"] is None else int(row["score_value"])),
+                ),
+            )
+            for row in rows
+        ]
+        competitors.sort(
+            key=lambda item: (
+                -item.statistic.score,
+                -item.statistic.accuracy,
+                item.statistic.elapsed_seconds,
+            )
+        )
+        return competitors[:limit]
 
     def summary(self, player_id: int, definition_hash: str) -> PerformanceSummary | None:
         rounds = tuple(
@@ -133,7 +234,8 @@ class StatisticsRepository:
             raise ValueError("Das Bestenlisten-Limit muss positiv sein.")
         with self.database.connect() as connection:
             rows = connection.execute(
-                """SELECT s.player_id, p.name, s.correct, s.total, s.elapsed_seconds
+                """SELECT s.player_id, p.name, s.correct, s.total, s.elapsed_seconds,
+                          s.score_value
                    FROM round_statistics AS s
                    JOIN players AS p ON p.id = s.player_id
                    WHERE s.definition_hash = ?""",
@@ -149,6 +251,7 @@ class StatisticsRepository:
                 correct=int(row["correct"]),
                 total=int(row["total"]),
                 elapsed_seconds=float(row["elapsed_seconds"]),
+                score_value=None if row["score_value"] is None else int(row["score_value"]),
             )
             candidate = (
                 str(row["name"]),

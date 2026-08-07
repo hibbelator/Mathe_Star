@@ -46,12 +46,15 @@ class DefinedGame:
     per_task_seconds: int | None = 30
     correct_target: int | None = 40
     builtin: bool = False
+    wrong_answer_penalty: int = 0
 
     def __post_init__(self) -> None:
         if not self.identifier.strip() or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", self.identifier):
             raise ValueError("Die Kennung darf nur Kleinbuchstaben, Zahlen, _ und - enthalten.")
         if not self.name.strip():
             raise ValueError("Der Spielname darf nicht leer sein.")
+        if self.wrong_answer_penalty > 0:
+            raise ValueError("Fehlerpunkte müssen 0 oder eine negative ganze Zahl sein.")
         if self.factor_min <= 0 or self.factor_max < self.factor_min:
             raise ValueError("Der Faktorbereich ist ungültig.")
         if self.max_result < self.factor_min:
@@ -115,6 +118,7 @@ class DefinedGame:
             per_task_seconds=_optional_int(data.get("per_task_seconds")),
             correct_target=_optional_int(data.get("correct_target")),
             builtin=bool(data.get("builtin", False)),
+            wrong_answer_penalty=_required_int(data.get("wrong_answer_penalty", 0)),
         )
 
 

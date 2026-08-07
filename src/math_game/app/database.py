@@ -44,6 +44,10 @@ class AppDatabase:
                 definition_hash TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS round_statistics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -59,3 +63,10 @@ class AppDatabase:
             ON round_statistics(player_id, definition_hash, played_at);
             """
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(round_statistics)")}
+        if "events_json" not in columns:
+            connection.execute(
+                "ALTER TABLE round_statistics ADD COLUMN events_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "score_value" not in columns:
+            connection.execute("ALTER TABLE round_statistics ADD COLUMN score_value INTEGER")

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from math_game.app.database import AppDatabase
 from math_game.app.players import PlayerRepository
-from math_game.app.stats import RoundStatistic, StatisticsRepository
+from math_game.app.stats import RoundStatistic, ScoreEvent, StatisticsRepository
 
 
 def test_statistics_persist_and_choose_best_round(tmp_path: Path) -> None:
@@ -74,3 +74,61 @@ def test_leaderboard_uses_best_round_per_player_for_identical_game(tmp_path: Pat
     assert [entry.rank for entry in leaderboard] == [1, 2]
     assert leaderboard[0].score == 1200
     assert leaderboard[1].score == 1095
+
+
+def test_live_score_events_and_explicit_score_survive_round_trip(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    events = (ScoreEvent(1.5, True, 1), ScoreEvent(3.0, False, 0))
+    repository.add(
+        RoundStatistic(
+            player.id,
+            "game",
+            "Spiel",
+            "sha256:a",
+            1,
+            2,
+            3.0,
+            events=events,
+            score_value=0,
+        )
+    )
+
+    loaded = repository.load(player.id)[0]
+
+    assert loaded.events == events
+    assert loaded.score == 0
+    assert repository.best_round(player.id, "sha256:a") == loaded
+
+
+def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    players = PlayerRepository(database)
+    mia, ben, lio = players.add("Mia"), players.add("Ben"), players.add("Lio")
+    repository = StatisticsRepository(database)
+
+    def add_run(player_id: int, definition_hash: str, score: int) -> None:
+        repository.add(
+            RoundStatistic(
+                player_id,
+                "game",
+                "Spiel",
+                definition_hash,
+                1,
+                1,
+                2.0,
+                events=(ScoreEvent(1.0, True, score),),
+                score_value=score,
+            )
+        )
+
+    add_run(mia.id, "sha256:a", 4)
+    add_run(ben.id, "sha256:a", 7)
+    add_run(lio.id, "sha256:a", 5)
+    add_run(mia.id, "sha256:other", 99)
+
+    competitors = repository.race_competitors("sha256:a", limit=2)
+
+    assert [item.player_name for item in competitors] == ["Ben", "Lio"]
+    assert [item.statistic.score for item in competitors] == [7, 5]

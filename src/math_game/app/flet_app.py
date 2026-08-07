@@ -13,7 +13,7 @@ import flet as ft
 
 from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
-from math_game.app.stats import RoundStatistic, StatisticsRepository
+from math_game.app.stats import RaceCompetitor, RoundStatistic, ScoreEvent, StatisticsRepository
 from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
@@ -39,18 +39,24 @@ class MathAdventureApp:
         self.games = GameRepository()
         self.statistics = StatisticsRepository()
         self.players = PlayerRepository()
-        self.active_player: Player | None = next(iter(self.players.all()), None)
+        self.active_player: Player | None = self.players.last_used()
         self.view = "menu"
         self.session: RoundSession | None = None
         self.active_game: DefinedGame | None = None
         self.answer_field: ft.TextField | None = None
         self.auto_advance_timer: threading.Timer | None = None
         self.special_deadline_timer: threading.Timer | None = None
+        self.ghost_tick_timer: threading.Timer | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
         self.editor_error = ""
         self.player_error = ""
+        self.editor_seed: dict[str, str] | None = None
+        self.live_score_events: list[ScoreEvent] = []
+        self.race_competitors: list[RaceCompetitor] = []
+        self.race_target_points = 0
+        self.race_vehicle = "🚀"
         self.special_mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode | None = None
         self.special_generator: DefinedGameTaskGenerator | None = None
         self.special_task: ArithmeticTask | None = None
@@ -94,6 +100,13 @@ class MathAdventureApp:
             and self.session.phase is RoundPhase.TASK
         ):
             self.answer_field.focus()
+        if (
+            self.race_competitors
+            and self.session is not None
+            and self.session.phase is RoundPhase.TASK
+            and self.session.feedback is None
+        ):
+            self._schedule_ghost_tick()
 
     def _main_menu_view(self) -> ft.Column:
         return ft.Column(
@@ -141,6 +154,8 @@ class MathAdventureApp:
             ft.Text("Definierte Spiele", size=22, weight=ft.FontWeight.BOLD),
         ]
         for game in self.games.all_games():
+            available_rivals = self.statistics.race_competitors(game.definition_hash(), 8)
+            can_chase = bool(available_rivals)
             weights = game.weights
             details = (
                 f"Gewichte +{weights.addition} −{weights.subtraction} ×{weights.multiplication} "
@@ -162,9 +177,51 @@ class MathAdventureApp:
                                     ft.Text(details, color=MUTED, size=13),
                                 ],
                             ),
-                            ft.ElevatedButton(
-                                "Spielen",
-                                on_click=lambda _, selected=game: self._start_game(selected),
+                            ft.Column(
+                                horizontal_alignment=ft.CrossAxisAlignment.END,
+                                controls=[
+                                    ft.ElevatedButton(
+                                        "Spielen",
+                                        on_click=lambda _, selected=game: self._start_game(
+                                            selected
+                                        ),
+                                    ),
+                                    ft.TextButton(
+                                        "🏁 Rennen starten",
+                                        disabled=not can_chase,
+                                        tooltip=(
+                                            "Tritt live gegen deine beste Runde an"
+                                            if can_chase
+                                            else "Nach einer gespielten Runde verfügbar"
+                                        ),
+                                        on_click=lambda _, selected=game: self._configure_race(
+                                            selected
+                                        ),
+                                    ),
+                                    ft.Row(
+                                        controls=[
+                                            ft.IconButton(
+                                                icon=ft.Icons.CONTENT_COPY,
+                                                tooltip="Als neues Spiel kopieren",
+                                                on_click=lambda _, selected=game: (
+                                                    self._confirm_copy_game(selected)
+                                                ),
+                                            ),
+                                            ft.IconButton(
+                                                icon=ft.Icons.DELETE_OUTLINE,
+                                                tooltip=(
+                                                    "Eigene Spieldefinition löschen"
+                                                    if not game.builtin
+                                                    else "Mitgelieferte Spiele sind nicht löschbar"
+                                                ),
+                                                disabled=game.builtin,
+                                                on_click=lambda _, selected=game: (
+                                                    self._confirm_delete_game(selected)
+                                                ),
+                                            ),
+                                        ]
+                                    ),
+                                ],
                             ),
                         ],
                     ),
@@ -207,7 +264,10 @@ class MathAdventureApp:
             "task_count": "20",
             "per_task": "30",
             "target": "40",
+            "wrong_penalty": "0",
+            "mode": GameMode.TIME_ATTACK.value,
         }
+        defaults.update(self.editor_seed or {})
         fields: list[ft.Control] = []
         for key, label in (
             ("name", "Spielname"),
@@ -224,13 +284,14 @@ class MathAdventureApp:
             ("task_count", "Aufgabenanzahl"),
             ("per_task", "Zeit je Aufgabe (Sekunden)"),
             ("target", "Richtige-Ziel"),
+            ("wrong_penalty", "Punkte je Fehler (0 oder negativ, z. B. -1)"),
         ):
             field = ft.TextField(label=label, value=defaults[key])
             self.editor_fields[key] = field
             fields.append(field)
         mode = ft.Dropdown(
             label="Spieltyp / Modus",
-            value=GameMode.TIME_ATTACK.value,
+            value=defaults["mode"],
             options=[
                 ft.dropdown.Option(GameMode.TIME_ATTACK.value, "Zeitspiel"),
                 ft.dropdown.Option(GameMode.TASK_SPRINT.value, "Aufgaben-Sprint"),
@@ -294,8 +355,7 @@ class MathAdventureApp:
             )
         return self._section(
             "📊 Statistik / Auswertung",
-            "Nur Runden desselben Spielers und exakt derselben Spieldefinition "
-            "werden verglichen.",
+            "Nur Runden desselben Spielers und exakt derselben Spieldefinition werden verglichen.",
             controls,
         )
 
@@ -338,6 +398,7 @@ class MathAdventureApp:
 
     def _select_player(self, player: Player) -> None:
         self.active_player = player
+        self.players.remember(player.id)
         self._navigate("menu")
 
     def _section(self, title: str, subtitle: str, controls: list[ft.Control]) -> ft.Column:
@@ -357,6 +418,7 @@ class MathAdventureApp:
         task = session.current_task
         if task is None:
             raise RuntimeError("task view requires an active task")
+        current_points = self.live_score_events[-1].points_after if self.live_score_events else 0
         controls: list[ft.Control] = [
             ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -367,13 +429,14 @@ class MathAdventureApp:
                         color=MUTED,
                     ),
                     ft.Text(
-                        f"Richtig: {session.correct_count}",
+                        f"Richtig: {session.correct_count} · Punkte: {current_points}",
                         color=SUCCESS,
                         weight=ft.FontWeight.BOLD,
                     ),
                 ],
             ),
             ft.ProgressBar(value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"),
+            *self._race_controls(),
             ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK),
             ft.Row(
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -445,6 +508,7 @@ class MathAdventureApp:
         self.special_mode = controller
         self.special_feedback = ""
         self.round_started_at, self.statistic_saved = time.monotonic(), False
+        self.live_score_events, self.race_competitors = [], []
         self._next_special_task()
         self.render()
         if isinstance(controller, BlitzMode | WarmUpMode):
@@ -521,6 +585,7 @@ class MathAdventureApp:
             self.render()
             return
         self.special_feedback = "✓ Richtig!" if correct else f"✕ Richtig wäre {expected}."
+        self._append_score_event(correct)
         if not self._special_finished(mode):
             self._next_special_task()
         self.render()
@@ -613,6 +678,120 @@ class MathAdventureApp:
             content=ft.Text(text, size=18, color=color, weight=ft.FontWeight.BOLD),
         )
 
+    def _race_controls(self) -> list[ft.Control]:
+        if not self.race_competitors:
+            return []
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
+        racers: list[tuple[str, str, int, str]] = [
+            ("Du", self.race_vehicle, own_points, "Dein aktueller Lauf")
+        ]
+        opponent_vehicles = ("🏎️", "🚀", "🛸", "🚲", "🐉", "🛶", "🐆", "🦄")
+        for index, competitor in enumerate(self.race_competitors):
+            events = competitor.statistic.events
+            past = [event for event in events if event.elapsed_seconds <= elapsed]
+            points = past[-1].points_after if past else 0
+            next_event = next((event for event in events if event.elapsed_seconds > elapsed), None)
+            if next_event is None:
+                detail = "im Ziel"
+            else:
+                action = "+ Punkt" if next_event.correct else "Fehler"
+                detail = f"{action} bei {next_event.elapsed_seconds:.1f} s"
+            racers.append(
+                (
+                    competitor.player_name,
+                    opponent_vehicles[index % len(opponent_vehicles)],
+                    points,
+                    detail,
+                )
+            )
+        ordered = sorted(racers, key=lambda racer: racer[2], reverse=True)
+        own_rank = next(index for index, racer in enumerate(ordered, start=1) if racer[0] == "Du")
+        leading_points = ordered[0][2]
+        tracks = [
+            self._race_track(
+                name,
+                vehicle,
+                points,
+                f"{detail} · {leading_points - points} P Rückstand"
+                if points < leading_points
+                else f"{detail} · in Führung",
+                name == "Du",
+            )
+            for name, vehicle, points, detail in racers
+        ]
+        return [
+            ft.Container(
+                padding=16,
+                bgcolor="#F3F0FF",
+                border_radius=18,
+                border=ft.border.all(2, "#B8A7FF"),
+                content=ft.Column(
+                    spacing=10,
+                    controls=[
+                        ft.Row(
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            controls=[
+                                ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
+                                ft.Text(
+                                    f"Platz {own_rank}/{len(racers)} · "
+                                    f"Ziel {self.race_target_points} P",
+                                    color=PRIMARY,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                            ],
+                        ),
+                        ft.Text(
+                            "Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED
+                        ),
+                        *tracks,
+                    ],
+                ),
+            )
+        ]
+
+    def _race_track(
+        self, name: str, vehicle: str, points: int, detail: str, is_player: bool
+    ) -> ft.Control:
+        target = max(1, self.race_target_points)
+        progress = min(1.0, max(0.0, points / target))
+        track_width = 470
+        vehicle_left = round(progress * (track_width - 35))
+        return ft.Container(
+            padding=8,
+            bgcolor="#FFFFFF" if is_player else "#FAFAFF",
+            border_radius=12,
+            border=ft.border.all(2 if is_player else 1, PRIMARY if is_player else "#DDD8F5"),
+            content=ft.Column(
+                spacing=3,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(name, expand=True, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"{points} P · {detail}", size=11, color=MUTED),
+                        ]
+                    ),
+                    ft.Stack(
+                        width=track_width,
+                        height=34,
+                        controls=[
+                            ft.Container(
+                                top=15,
+                                width=track_width,
+                                height=5,
+                                bgcolor="#DED9F8",
+                                border_radius=4,
+                            ),
+                            ft.Text("🏁", right=0, top=2, size=24),
+                            ft.Container(
+                                left=vehicle_left, top=0, content=ft.Text(vehicle, size=27)
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
     def _finished_view(self) -> ft.Column:
         session = self._active_session()
         game = self.active_game
@@ -629,9 +808,16 @@ class MathAdventureApp:
                     size=20,
                     color=MUTED,
                 ),
+                *self._race_controls(),
                 *self._dashboard_controls(game.definition_hash(), highlight_latest=True),
                 self._action_button(
-                    "Noch einmal spielen", lambda _: self._start_game(self.active_game)
+                    "Rennen noch einmal" if self.race_competitors else "Noch einmal spielen",
+                    lambda _: self._start_game(
+                        game,
+                        competitors=list(self.race_competitors),
+                        target_points=self.race_target_points,
+                        race_vehicle=self.race_vehicle,
+                    ),
                 ),
                 ft.TextButton("Zur Spieleauswahl", on_click=lambda _: self._choose_another()),
             ],
@@ -794,9 +980,11 @@ class MathAdventureApp:
                 task_count=int(value("task_count")),
                 per_task_seconds=int(value("per_task")),
                 correct_target=int(value("target")),
+                wrong_answer_penalty=int(value("wrong_penalty")),
             )
             self.games.save(game)
             self.editor_error = ""
+            self.editor_seed = None
             self._navigate("play")
         except (ValueError, KeyError) as error:
             self.editor_error = str(error)
@@ -806,7 +994,149 @@ class MathAdventureApp:
         self.games.delete(identifier)
         self.render()
 
-    def _start_game(self, game: DefinedGame | None) -> None:
+    def _confirm_delete_game(self, game: DefinedGame) -> None:
+        if game.builtin:
+            return
+        self._show_confirmation(
+            "Spiel wirklich löschen?",
+            f"„{game.name}“ wird dauerhaft aus deinen eigenen Spielen entfernt.",
+            lambda: self._delete_game(game.identifier),
+        )
+
+    def _confirm_copy_game(self, game: DefinedGame) -> None:
+        def copy_to_editor() -> None:
+            existing_ids = {existing.identifier for existing in self.games.all_games()}
+            base_identifier = f"{game.identifier}-kopie"
+            copied_identifier = base_identifier
+            copy_number = 2
+            while copied_identifier in existing_ids:
+                copied_identifier = f"{base_identifier}-{copy_number}"
+                copy_number += 1
+            self.editor_seed = {
+                "name": f"{game.name} – Kopie",
+                "identifier": copied_identifier,
+                "addition": str(game.weights.addition),
+                "subtraction": str(game.weights.subtraction),
+                "multiplication": str(game.weights.multiplication),
+                "division": str(game.weights.division),
+                "tables": ",".join(str(table) for table in game.allowed_tables),
+                "factor_min": str(game.factor_min),
+                "factor_max": str(game.factor_max),
+                "max_result": str(game.max_result),
+                "duration": str(game.duration_seconds or 300),
+                "task_count": str(game.task_count or 20),
+                "per_task": str(game.per_task_seconds or 30),
+                "target": str(game.correct_target or 40),
+                "wrong_penalty": str(game.wrong_answer_penalty),
+                "mode": game.mode.value,
+            }
+            self.view = "editor"
+            self.render()
+
+        self._show_confirmation(
+            "Spiel als Vorlage verwenden?",
+            f"Alle Regeln von „{game.name}“ werden in ein neues Spiel kopiert. "
+            "Das Original bleibt unverändert.",
+            copy_to_editor,
+        )
+
+    def _configure_race(self, game: DefinedGame) -> None:
+        available = self.statistics.race_competitors(game.definition_hash(), 8)
+        if not available:
+            return
+        default_count = min(3, len(available))
+        opponent_count = ft.Dropdown(
+            label="Anzahl aufgezeichneter Gegner",
+            value=str(default_count),
+            options=[
+                ft.dropdown.Option(str(count), f"{count} Gegner")
+                for count in range(1, min(8, len(available)) + 1)
+            ],
+        )
+        automatic_target = max(1, max(item.statistic.score for item in available[:default_count]))
+        target = ft.TextField(
+            label="Zielpunkte (leer = bestes Ergebnis)",
+            hint_text=str(automatic_target),
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        vehicle = ft.Dropdown(
+            label="Dein Rennfahrzeug",
+            value="🚀",
+            options=[
+                ft.dropdown.Option(icon, f"{icon} {name}")
+                for icon, name in (
+                    ("🚀", "Rakete"),
+                    ("🏎️", "Rennauto"),
+                    ("🛸", "UFO"),
+                    ("🐉", "Drache"),
+                    ("🦄", "Einhorn"),
+                )
+            ],
+        )
+        error_text = ft.Text("", color=ERROR)
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🏁 Dein Rennen zusammenstellen"),
+            content=ft.Container(
+                width=480,
+                content=ft.Column(
+                    tight=True,
+                    controls=[
+                        ft.Text(
+                            "Standardmäßig treten die besten aufgezeichneten Läufe dieses "
+                            "exakten Spiels an. Du bestimmst Feld, Ziel und Fahrzeug.",
+                            color=MUTED,
+                        ),
+                        opponent_count,
+                        target,
+                        vehicle,
+                        error_text,
+                    ],
+                ),
+            ),
+        )
+
+        def close(_: object) -> None:
+            dialog.open = False
+            self.page.update()
+
+        def start(_: object) -> None:
+            try:
+                count = int(opponent_count.value or str(default_count))
+                selected = available[:count]
+                target_points = (
+                    int(target.value.strip())
+                    if target.value and target.value.strip()
+                    else max(1, max(item.statistic.score for item in selected))
+                )
+                if target_points <= 0:
+                    raise ValueError("Das Rennziel muss mindestens 1 Punkt sein.")
+            except ValueError as error:
+                error_text.value = str(error) or "Bitte gib eine gültige ganze Zahl ein."
+                self.page.update()
+                return
+            dialog.open = False
+            self._start_game(
+                game,
+                competitors=selected,
+                target_points=target_points,
+                race_vehicle=vehicle.value or "🚀",
+            )
+
+        dialog.actions = [
+            ft.TextButton("Abbrechen", on_click=close),
+            ft.ElevatedButton("Rennen starten", on_click=start),
+        ]
+        self.page.open(dialog)
+
+    def _start_game(
+        self,
+        game: DefinedGame | None,
+        *,
+        competitors: list[RaceCompetitor] | None = None,
+        target_points: int = 0,
+        race_vehicle: str = "🚀",
+    ) -> None:
         if game is None:
             return
         if self.active_player is None:
@@ -815,6 +1145,7 @@ class MathAdventureApp:
             self.render()
             return
         self._cancel_auto_advance()
+        self._cancel_ghost_tick()
         definition = OperationDefinition(
             operation=ArithmeticOperation.ADDITION,
             left=OperandRange(game.factor_min, game.max_result),
@@ -832,6 +1163,10 @@ class MathAdventureApp:
             time.monotonic(),
             False,
         )
+        self.live_score_events = []
+        self.race_competitors = list(competitors or [])
+        self.race_target_points = target_points
+        self.race_vehicle = race_vehicle
         self.session.start()
         self.render()
 
@@ -848,6 +1183,10 @@ class MathAdventureApp:
                 session.correct_count,
                 session.task_count,
                 time.monotonic() - self.round_started_at,
+                events=tuple(self.live_score_events),
+                score_value=(
+                    self.live_score_events[-1].points_after if self.live_score_events else 0
+                ),
             )
         )
         self.statistic_saved = True
@@ -877,6 +1216,10 @@ class MathAdventureApp:
                 correct,
                 total,
                 time.monotonic() - self.round_started_at,
+                events=tuple(self.live_score_events),
+                score_value=(
+                    self.live_score_events[-1].points_after if self.live_score_events else 0
+                ),
             )
         )
         self.statistic_saved = True
@@ -897,6 +1240,7 @@ class MathAdventureApp:
 
     def _navigate(self, view: str) -> None:
         self._cancel_special_deadline()
+        self._cancel_ghost_tick()
         self.special_mode = self.special_generator = self.special_task = None
         self.session, self.active_game, self.view = None, None, view
         self.render()
@@ -906,6 +1250,9 @@ class MathAdventureApp:
         if game is None:
             return
         mode = self.special_mode
+        competitors = list(self.race_competitors)
+        target_points = self.race_target_points
+        race_vehicle = self.race_vehicle
 
         def restart() -> None:
             if isinstance(mode, BlitzMode):
@@ -917,7 +1264,12 @@ class MathAdventureApp:
             elif isinstance(mode, WarmUpMode):
                 self._start_special_mode("warm_up")
             else:
-                self._start_game(game)
+                self._start_game(
+                    game,
+                    competitors=competitors,
+                    target_points=target_points,
+                    race_vehicle=race_vehicle,
+                )
 
         self._show_confirmation(
             "Spiel neu starten?",
@@ -962,9 +1314,24 @@ class MathAdventureApp:
             self.answer_field.error_text = str(error)
             self.page.update()
             return
+        self._append_score_event(feedback.is_correct)
         if not feedback.is_correct and not feedback.is_task_complete:
             self.answer_field.value = ""
         self.render()
+
+    def _append_score_event(self, correct: bool) -> None:
+        game = self.active_game
+        if game is None:
+            return
+        previous = self.live_score_events[-1].points_after if self.live_score_events else 0
+        points = previous + (1 if correct else game.wrong_answer_penalty)
+        self.live_score_events.append(
+            ScoreEvent(
+                elapsed_seconds=max(0.0, time.monotonic() - self.round_started_at),
+                correct=correct,
+                points_after=points,
+            )
+        )
 
     def _next_task(self) -> None:
         self._cancel_auto_advance()
@@ -980,6 +1347,26 @@ class MathAdventureApp:
         if self.auto_advance_timer:
             self.auto_advance_timer.cancel()
             self.auto_advance_timer = None
+
+    def _schedule_ghost_tick(self) -> None:
+        self._cancel_ghost_tick()
+        self.ghost_tick_timer = threading.Timer(0.5, self._ghost_tick)
+        self.ghost_tick_timer.start()
+
+    def _ghost_tick(self) -> None:
+        self.ghost_tick_timer = None
+        if (
+            self.race_competitors
+            and self.session is not None
+            and self.session.phase is RoundPhase.TASK
+            and self.session.feedback is None
+        ):
+            self.render()
+
+    def _cancel_ghost_tick(self) -> None:
+        if self.ghost_tick_timer is not None:
+            self.ghost_tick_timer.cancel()
+            self.ghost_tick_timer = None
 
     def _on_keyboard(self, event: ft.KeyboardEvent) -> None:
         if (

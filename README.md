@@ -38,6 +38,17 @@ Bestquote, Durchschnittszeit und Entwicklung. Die aufklappbare Detailansicht erg
 Rundenverlauf und eine Bestenliste. Auch dort bleibt die Vergleichsbasis streng auf dieselbe
 Spieldefinition begrenzt, während die persönlichen Kennzahlen nur das aktive Profil betreffen.
 
+Beim nächsten Start wird automatisch das zuletzt verwendete Spielerprofil aktiviert. Für bereits
+gespielte Definitionen kann außerdem ein Live-Rennen gegen bis zu acht aufgezeichnete Läufe
+gestartet werden. Standardmäßig treten die stärksten Ergebnisse an; Zahl der Gegner, Zielpunktzahl
+und das eigene Fahrzeug – etwa Rakete, Rennauto oder Drache – können vor dem Start gewählt werden.
+Mehrere animierte Rennbahnen zeigen Position, Führung, Abstand und zeitgenau, wann ein Konkurrent
+punktet oder einen Fehler macht. Eigene Spiele lassen sich nach Bestätigung löschen; jedes fertige
+Spiel kann nach Bestätigung
+als vorausgefüllte, eigenständige Kopie geöffnet werden. In der Spieldefinition ist zusätzlich
+einstellbar, ob eine falsche Antwort keine Punkte kostet (`0`, Standard) oder einen frei wählbaren
+negativen Punktwert erhält, beispielsweise `-1`.
+
 ## Weg zur ersten Beta
 
 Die weitere Entwicklung ist nicht mehr als Folge einzelner Generatorpakete geplant. Die erste Beta soll in höchstens drei weiteren Sitzungen entstehen: zunächst als vollständig spielbarer Flet-Durchstich, danach mit gezieltem Fokus auf Interaktionsgefühl und motivierendes Feedback und schließlich mit Ergebnispräsentation sowie Stabilisierung. Die konkreten Abnahmekriterien stehen in [`docs/roadmap.md`](docs/roadmap.md).
