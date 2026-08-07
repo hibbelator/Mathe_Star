@@ -37,6 +37,30 @@ BACKGROUND, INK, PRIMARY, SUCCESS = "#F4F7FF", "#17223B", "#536DFE", "#168F68"
 WARNING, ERROR, CARD, MUTED = "#E67E22", "#C2415B", "#FFFFFF", "#52607A"
 
 
+def parse_race_levels(raw_value: str) -> list[int]:
+    """Parse one level, a range, or individually selected computer levels."""
+
+    raw_parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+    if not raw_parts:
+        raise ValueError("Bitte gib mindestens eine Computerstufe an.")
+    levels: list[int] = []
+    for part in raw_parts:
+        if "-" in part:
+            bounds = [value.strip() for value in part.split("-", 1)]
+            start, end = (int(value) for value in bounds)
+            if start > end:
+                raise ValueError("Bei einem Bereich muss die kleinere Stufe zuerst stehen.")
+            levels.extend(range(start, end + 1))
+        else:
+            levels.append(int(part))
+    levels = list(dict.fromkeys(levels))
+    if any(level not in range(1, 11) for level in levels):
+        raise ValueError("Computerstufen müssen zwischen 1 und 10 liegen.")
+    if len(levels) > 8:
+        raise ValueError("Bitte wähle höchstens 8 Computergegner.")
+    return levels
+
+
 class MathAdventureApp:
     """Render navigation, editor, round, feedback and statistics views."""
 
@@ -53,6 +77,7 @@ class MathAdventureApp:
         self.auto_advance_timer: threading.Timer | None = None
         self.special_deadline_timer: threading.Timer | None = None
         self.ghost_tick_timer: threading.Timer | None = None
+        self.race_live_panel: ft.Container | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -700,7 +725,14 @@ class MathAdventureApp:
 
     def _race_controls(self) -> list[ft.Control]:
         if not self.race_competitors:
+            self.race_live_panel = None
             return []
+        self.race_live_panel = self._build_race_panel()
+        return [self.race_live_panel]
+
+    def _build_race_panel(self) -> ft.Container:
+        """Build only the moving race area, independently of the answer form."""
+
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
         own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
         racers: list[tuple[str, str, int, str]] = [
@@ -740,35 +772,31 @@ class MathAdventureApp:
             )
             for name, vehicle, points, detail in racers
         ]
-        return [
-            ft.Container(
-                padding=16,
-                bgcolor="#F3F0FF",
-                border_radius=18,
-                border=ft.border.all(2, "#B8A7FF"),
-                content=ft.Column(
-                    spacing=10,
-                    controls=[
-                        ft.Row(
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            controls=[
-                                ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
-                                ft.Text(
-                                    f"Platz {own_rank}/{len(racers)} · "
-                                    f"Ziel {self.race_target_points} P",
-                                    color=PRIMARY,
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                            ],
-                        ),
-                        ft.Text(
-                            "Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED
-                        ),
-                        *tracks,
-                    ],
-                ),
-            )
-        ]
+        return ft.Container(
+            padding=16,
+            bgcolor="#F3F0FF",
+            border_radius=18,
+            border=ft.border.all(2, "#B8A7FF"),
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                f"Platz {own_rank}/{len(racers)} · "
+                                f"Ziel {self.race_target_points} P",
+                                color=PRIMARY,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                    ),
+                    ft.Text("Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED),
+                    *tracks,
+                ],
+            ),
+        )
 
     def _race_track(
         self, name: str, vehicle: str, points: int, detail: str, is_player: bool
@@ -1067,6 +1095,13 @@ class MathAdventureApp:
             if self.active_player
             else None
         )
+        personal_best = (
+            self.statistics.best_round(self.active_player.id, game.definition_hash())
+            if self.active_player
+            else None
+        )
+        if personal_best is not None and not personal_best.events:
+            personal_best = None
         source = ft.Dropdown(
             label="Gegnertyp",
             value="computer_static",
@@ -1084,14 +1119,24 @@ class MathAdventureApp:
                 ),
             ],
         )
-        level = ft.Slider(min=1, max=10, divisions=9, value=5, label="Stufe {value}")
+        levels = ft.TextField(
+            label="Computerstufen",
+            value="3-5",
+            hint_text="z. B. 3-6 oder 1,5,9",
+            helper_text="Bereich oder einzelne Stufen; jede angegebene Stufe ist ein Läufer.",
+        )
         opponent_count = ft.Dropdown(
-            label="Anzahl Gegner",
+            label="Anzahl bei ‚aufgezeichnete Läufe‘",
             value="3",
             options=[ft.dropdown.Option(str(count), str(count)) for count in range(1, 6)],
         )
         variable = ft.Switch(
             label="Unregelmäßig spielen (mit richtigen und falschen Antworten)", value=True
+        )
+        include_personal_best = ft.Switch(
+            label="Meinen persönlichen Rekord als zusätzlichen Läufer aufnehmen",
+            value=False,
+            disabled=personal_best is None,
         )
         target = ft.TextField(
             label="Festes Ergebnisziel",
@@ -1140,9 +1185,10 @@ class MathAdventureApp:
                         ),
                         source,
                         history_note,
-                        ft.Text("Schwierigkeit", weight=ft.FontWeight.BOLD),
-                        level,
+                        ft.Text("Schwierigkeit und Läuferfeld", weight=ft.FontWeight.BOLD),
+                        levels,
                         opponent_count,
+                        include_personal_best,
                         variable,
                         target,
                         vehicle,
@@ -1160,13 +1206,13 @@ class MathAdventureApp:
             try:
                 count = int(opponent_count.value or "3")
                 target_points = int(target.value or "0")
-                selected_level = round(level.value or 5)
                 if target_points <= 0:
                     raise ValueError("Das Rennziel muss mindestens 1 Punkt sein.")
                 selected_source = source.value or "computer_static"
                 if selected_source == "recorded":
                     competitors = recorded[:count]
                 else:
+                    selected_levels = parse_race_levels(levels.value or "")
                     if selected_source == "computer_history" and own_summary is None:
                         raise ValueError("Für diesen Gegner fehlt noch eine eigene Runde.")
                     baseline = (
@@ -1178,15 +1224,19 @@ class MathAdventureApp:
                     competitors = [
                         computer_competitor(
                             game.definition_hash(),
-                            level=max(1, min(10, selected_level + index - count // 2)),
+                            level=computer_level,
                             target_points=target_points,
                             duration_seconds=duration,
                             baseline_points=baseline,
                             seed=index + target_points,
                             variable=bool(variable.value),
                         )
-                        for index in range(count)
+                        for index, computer_level in enumerate(selected_levels)
                     ]
+                    if include_personal_best.value and personal_best is not None:
+                        competitors.insert(
+                            0, RaceCompetitor("Dein persönlicher Rekord", personal_best)
+                        )
                 if not competitors:
                     raise ValueError("Keine aufgezeichneten Gegner verfügbar.")
             except ValueError as error:
@@ -1438,8 +1488,15 @@ class MathAdventureApp:
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.session.feedback is None
+            and self.race_live_panel is not None
         ):
-            self.render()
+            # Updating the whole page here recreated the TextField every 500 ms and
+            # erased an answer while it was being typed.  Replace only the contents
+            # of the live race panel; task, focus and input value remain untouched.
+            refreshed = self._build_race_panel()
+            self.race_live_panel.content = refreshed.content
+            self.race_live_panel.update()
+            self._schedule_ghost_tick()
 
     def _cancel_ghost_tick(self) -> None:
         if self.ghost_tick_timer is not None:
