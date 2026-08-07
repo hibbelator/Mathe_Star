@@ -13,7 +13,13 @@ import flet as ft
 
 from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
-from math_game.app.stats import RaceCompetitor, RoundStatistic, ScoreEvent, StatisticsRepository
+from math_game.app.stats import (
+    RaceCompetitor,
+    RoundStatistic,
+    ScoreEvent,
+    StatisticsRepository,
+    computer_competitor,
+)
 from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
@@ -29,6 +35,30 @@ from math_game.modes.warm_up import WarmUpPhase
 
 BACKGROUND, INK, PRIMARY, SUCCESS = "#F4F7FF", "#17223B", "#536DFE", "#168F68"
 WARNING, ERROR, CARD, MUTED = "#E67E22", "#C2415B", "#FFFFFF", "#52607A"
+
+
+def parse_race_levels(raw_value: str) -> list[int]:
+    """Parse one level, a range, or individually selected computer levels."""
+
+    raw_parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+    if not raw_parts:
+        raise ValueError("Bitte gib mindestens eine Computerstufe an.")
+    levels: list[int] = []
+    for part in raw_parts:
+        if "-" in part:
+            bounds = [value.strip() for value in part.split("-", 1)]
+            start, end = (int(value) for value in bounds)
+            if start > end:
+                raise ValueError("Bei einem Bereich muss die kleinere Stufe zuerst stehen.")
+            levels.extend(range(start, end + 1))
+        else:
+            levels.append(int(part))
+    levels = list(dict.fromkeys(levels))
+    if any(level not in range(1, 11) for level in levels):
+        raise ValueError("Computerstufen müssen zwischen 1 und 10 liegen.")
+    if len(levels) > 8:
+        raise ValueError("Bitte wähle höchstens 8 Computergegner.")
+    return levels
 
 
 class MathAdventureApp:
@@ -47,6 +77,15 @@ class MathAdventureApp:
         self.auto_advance_timer: threading.Timer | None = None
         self.special_deadline_timer: threading.Timer | None = None
         self.ghost_tick_timer: threading.Timer | None = None
+        self.race_live_panel: ft.Container | None = None
+        self.dialog_open = False
+        self.dialog_paused_at = 0.0
+        self.task_number_text: ft.Text | None = None
+        self.task_score_text: ft.Text | None = None
+        self.task_progress: ft.ProgressBar | None = None
+        self.task_prompt: ft.Text | None = None
+        self.task_feedback: ft.Container | None = None
+        self.task_action: ft.ElevatedButton | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -63,6 +102,10 @@ class MathAdventureApp:
         self.special_feedback = ""
         page.title = "Mathe-Abenteuer"
         page.bgcolor, page.padding = BACKGROUND, 24
+        # The central card can be taller than a small laptop or phone viewport.
+        # Scrolling the page (rather than only selected subsections) keeps every
+        # menu action and dialog entry reachable.
+        page.scroll = ft.ScrollMode.AUTO
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
         page.on_keyboard_event = self._on_keyboard
         self.render()
@@ -101,7 +144,8 @@ class MathAdventureApp:
         ):
             self.answer_field.focus()
         if (
-            self.race_competitors
+            not self.dialog_open
+            and self.race_competitors
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.session.feedback is None
@@ -154,8 +198,6 @@ class MathAdventureApp:
             ft.Text("Definierte Spiele", size=22, weight=ft.FontWeight.BOLD),
         ]
         for game in self.games.all_games():
-            available_rivals = self.statistics.race_competitors(game.definition_hash(), 8)
-            can_chase = bool(available_rivals)
             weights = game.weights
             details = (
                 f"Gewichte +{weights.addition} −{weights.subtraction} ×{weights.multiplication} "
@@ -188,12 +230,7 @@ class MathAdventureApp:
                                     ),
                                     ft.TextButton(
                                         "🏁 Rennen starten",
-                                        disabled=not can_chase,
-                                        tooltip=(
-                                            "Tritt live gegen deine beste Runde an"
-                                            if can_chase
-                                            else "Nach einer gespielten Runde verfügbar"
-                                        ),
+                                        tooltip="Gegen Computer oder vergangene Läufe antreten",
                                         on_click=lambda _, selected=game: self._configure_race(
                                             selected
                                         ),
@@ -362,13 +399,42 @@ class MathAdventureApp:
     def _players_view(self) -> ft.Column:
         name = ft.TextField(label="Name des Kindes")
         image = ft.TextField(label="Bilddatei (optional)", hint_text="z. B. /Bilder/lina.png")
-        controls: list[ft.Control] = [name, image]
+        icon = ft.Dropdown(
+            label="Spielericon",
+            value="🙂",
+            options=[
+                ft.dropdown.Option(value, f"{value} {label}")
+                for value, label in (
+                    ("🙂", "Fröhlich"),
+                    ("😎", "Cool"),
+                    ("🤓", "Schlau"),
+                    ("🧒", "Kind"),
+                    ("👧", "Mädchen"),
+                    ("👦", "Junge"),
+                    ("🦊", "Fuchs"),
+                    ("🐼", "Panda"),
+                    ("🐯", "Tiger"),
+                    ("🦁", "Löwe"),
+                    ("🐸", "Frosch"),
+                    ("🦄", "Einhorn"),
+                    ("🐲", "Drache"),
+                    ("🧙", "Zauberer"),
+                    ("🥷", "Ninja"),
+                    ("🦸", "Superheld"),
+                    ("👩‍🚀", "Astronautin"),
+                    ("👨‍🚀", "Astronaut"),
+                )
+            ],
+        )
+        controls: list[ft.Control] = [name, icon, image]
         if self.player_error:
             controls.append(ft.Text(self.player_error, color=ERROR))
 
         def create(_: object) -> None:
             try:
-                self.active_player = self.players.add(name.value or "", image.value or None)
+                self.active_player = self.players.add(
+                    name.value or "", image.value or None, icon.value or "🙂"
+                )
                 self.player_error = ""
                 self._navigate("menu")
             except ValueError as error:
@@ -377,7 +443,7 @@ class MathAdventureApp:
 
         controls.append(self._action_button("Spieler anlegen", create))
         for player in self.players.all():
-            avatar: ft.Control = ft.CircleAvatar(content=ft.Text(player.name[:1].upper()))
+            avatar: ft.Control = ft.CircleAvatar(content=ft.Text(player.icon, size=22))
             if player.image_path:
                 avatar = ft.CircleAvatar(foreground_image_src=player.image_path)
             controls.append(
@@ -419,25 +485,35 @@ class MathAdventureApp:
         if task is None:
             raise RuntimeError("task view requires an active task")
         current_points = self.live_score_events[-1].points_after if self.live_score_events else 0
+        wrong_count = len(session.results) - session.correct_count
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        timed = bool(self.active_game and self.active_game.duration_seconds)
+        self.task_number_text = ft.Text(
+            f"{self.active_game.name if self.active_game else 'Spiel'} · "
+            f"Aufgabe {session.task_number}/{session.task_count}",
+            color=MUTED,
+        )
+        self.task_score_text = ft.Text(
+            f"✓ {session.correct_count}   ✕ {wrong_count}   ⭐ {current_points} P   "
+            f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s",
+            color=PRIMARY,
+            weight=ft.FontWeight.BOLD,
+        )
+        self.task_progress = ft.ProgressBar(
+            value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"
+        )
+        self.task_prompt = ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK)
         controls: list[ft.Control] = [
             ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 controls=[
-                    ft.Text(
-                        f"{self.active_game.name if self.active_game else 'Spiel'} · "
-                        f"Aufgabe {session.task_number}/{session.task_count}",
-                        color=MUTED,
-                    ),
-                    ft.Text(
-                        f"Richtig: {session.correct_count} · Punkte: {current_points}",
-                        color=SUCCESS,
-                        weight=ft.FontWeight.BOLD,
-                    ),
+                    self.task_number_text,
+                    self.task_score_text,
                 ],
             ),
-            ft.ProgressBar(value=session.progress, color=PRIMARY, bgcolor="#E6EAFE"),
+            self.task_progress,
             *self._race_controls(),
-            ft.Text(task.prompt, size=48, weight=ft.FontWeight.BOLD, color=INK),
+            self.task_prompt,
             ft.Row(
                 alignment=ft.MainAxisAlignment.CENTER,
                 controls=[
@@ -457,9 +533,15 @@ class MathAdventureApp:
             on_submit=self._on_submit_clicked,
         )
         controls.append(self.answer_field)
+        self.task_feedback = ft.Container(visible=False)
+        controls.append(self.task_feedback)
         if feedback:
             if feedback.is_correct:
-                controls.append(self._feedback("✓ Richtig! Super gelöst.", SUCCESS, "#E6F4EA"))
+                self.task_feedback.content = ft.Text(
+                    "✓ Richtig! Super gelöst.", size=18, color=SUCCESS, weight=ft.FontWeight.BOLD
+                )
+                self.task_feedback.bgcolor = "#E6F4EA"
+                self.task_feedback.visible = True
                 self._schedule_auto_advance(0.8)
             elif not feedback.is_task_complete:
                 controls.append(
@@ -471,12 +553,8 @@ class MathAdventureApp:
                         f"✕ Die richtige Antwort ist {feedback.expected_answer}.", ERROR, "#FCE8E6"
                     )
                 )
-        if feedback and feedback.is_task_complete and not feedback.is_correct:
-            controls.append(
-                self._action_button("Nächste Aufgabe (Enter)", lambda _: self._next_task())
-            )
-        elif feedback is None or not feedback.is_task_complete:
-            controls.append(self._action_button("Antwort prüfen", self._on_submit_clicked))
+        self.task_action = self._action_button("Antwort prüfen", self._on_submit_clicked)
+        controls.append(self.task_action)
         return ft.Column(
             horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=18, controls=controls
         )
@@ -680,13 +758,39 @@ class MathAdventureApp:
 
     def _race_controls(self) -> list[ft.Control]:
         if not self.race_competitors:
+            self.race_live_panel = None
             return []
+        self.race_live_panel = self._build_race_panel()
+        return [self.race_live_panel]
+
+    def _build_race_panel(self) -> ft.Container:
+        """Build only the moving race area, independently of the answer form."""
+
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
         own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
-        racers: list[tuple[str, str, int, str]] = [
-            ("Du", self.race_vehicle, own_points, "Dein aktueller Lauf")
+        own_name = self.active_player.name if self.active_player else "Du"
+        own_icon = self.active_player.icon if self.active_player else "🙂"
+        racers: list[tuple[str, str, str, int, str]] = [
+            (own_name, own_icon, self.race_vehicle, own_points, "Dein aktueller Lauf")
         ]
-        opponent_vehicles = ("🏎️", "🚀", "🛸", "🚲", "🐉", "🛶", "🐆", "🦄")
+        opponent_vehicles = (
+            "🏎️",
+            "🚀",
+            "🛸",
+            "🚲",
+            "🐉",
+            "🛶",
+            "🐆",
+            "🦄",
+            "🏍️",
+            "🛹",
+            "🛼",
+            "🚁",
+            "🦖",
+            "🐎",
+            "🦅",
+            "🐬",
+        )
         for index, competitor in enumerate(self.race_competitors):
             events = competitor.statistic.events
             past = [event for event in events if event.elapsed_seconds <= elapsed]
@@ -700,58 +804,64 @@ class MathAdventureApp:
             racers.append(
                 (
                     competitor.player_name,
+                    competitor.player_icon,
                     opponent_vehicles[index % len(opponent_vehicles)],
                     points,
                     detail,
                 )
             )
-        ordered = sorted(racers, key=lambda racer: racer[2], reverse=True)
-        own_rank = next(index for index, racer in enumerate(ordered, start=1) if racer[0] == "Du")
-        leading_points = ordered[0][2]
+        ordered = sorted(racers, key=lambda racer: racer[3], reverse=True)
+        own_rank = next(
+            index for index, racer in enumerate(ordered, start=1) if racer[0] == own_name
+        )
+        leading_points = ordered[0][3]
         tracks = [
             self._race_track(
                 name,
+                player_icon,
                 vehicle,
                 points,
                 f"{detail} · {leading_points - points} P Rückstand"
                 if points < leading_points
                 else f"{detail} · in Führung",
-                name == "Du",
+                name == own_name,
             )
-            for name, vehicle, points, detail in racers
+            for name, player_icon, vehicle, points, detail in racers
         ]
-        return [
-            ft.Container(
-                padding=16,
-                bgcolor="#F3F0FF",
-                border_radius=18,
-                border=ft.border.all(2, "#B8A7FF"),
-                content=ft.Column(
-                    spacing=10,
-                    controls=[
-                        ft.Row(
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            controls=[
-                                ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
-                                ft.Text(
-                                    f"Platz {own_rank}/{len(racers)} · "
-                                    f"Ziel {self.race_target_points} P",
-                                    color=PRIMARY,
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                            ],
-                        ),
-                        ft.Text(
-                            "Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED
-                        ),
-                        *tracks,
-                    ],
-                ),
-            )
-        ]
+        return ft.Container(
+            padding=16,
+            bgcolor="#F3F0FF",
+            border_radius=18,
+            border=ft.border.all(2, "#B8A7FF"),
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                f"Platz {own_rank}/{len(racers)} · "
+                                f"Ziel {self.race_target_points} P",
+                                color=PRIMARY,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                    ),
+                    ft.Text("Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED),
+                    *tracks,
+                ],
+            ),
+        )
 
     def _race_track(
-        self, name: str, vehicle: str, points: int, detail: str, is_player: bool
+        self,
+        name: str,
+        player_icon: str,
+        vehicle: str,
+        points: int,
+        detail: str,
+        is_player: bool,
     ) -> ft.Control:
         target = max(1, self.race_target_points)
         progress = min(1.0, max(0.0, points / target))
@@ -767,6 +877,7 @@ class MathAdventureApp:
                 controls=[
                     ft.Row(
                         controls=[
+                            ft.Text(player_icon, size=22),
                             ft.Text(name, expand=True, weight=ft.FontWeight.BOLD),
                             ft.Text(f"{points} P · {detail}", size=11, color=MUTED),
                         ]
@@ -1041,22 +1152,59 @@ class MathAdventureApp:
         )
 
     def _configure_race(self, game: DefinedGame) -> None:
-        available = self.statistics.race_competitors(game.definition_hash(), 8)
-        if not available:
-            return
-        default_count = min(3, len(available))
-        opponent_count = ft.Dropdown(
-            label="Anzahl aufgezeichneter Gegner",
-            value=str(default_count),
+        self._pause_for_dialog()
+        recorded = self.statistics.race_competitors(game.definition_hash(), 8)
+        own_summary = (
+            self.statistics.summary(self.active_player.id, game.definition_hash())
+            if self.active_player
+            else None
+        )
+        personal_best = (
+            self.statistics.best_round(self.active_player.id, game.definition_hash())
+            if self.active_player
+            else None
+        )
+        if personal_best is not None and not personal_best.events:
+            personal_best = None
+        source = ft.Dropdown(
+            label="Gegnertyp",
+            value="computer_static",
             options=[
-                ft.dropdown.Option(str(count), f"{count} Gegner")
-                for count in range(1, min(8, len(available)) + 1)
+                ft.dropdown.Option("computer_static", "Computer · statische Stärke"),
+                *(
+                    [ft.dropdown.Option("computer_history", "Computer · an meinem Ø orientiert")]
+                    if own_summary
+                    else []
+                ),
+                *(
+                    [ft.dropdown.Option("recorded", "Aufgezeichnete echte Läufe")]
+                    if recorded
+                    else []
+                ),
             ],
         )
-        automatic_target = max(1, max(item.statistic.score for item in available[:default_count]))
+        levels = ft.TextField(
+            label="Computerstufen",
+            value="3-5",
+            hint_text="z. B. 3-6 oder 1,5,9",
+            helper_text="Bereich oder einzelne Stufen; jede angegebene Stufe ist ein Läufer.",
+        )
+        opponent_count = ft.Dropdown(
+            label="Anzahl bei ‚aufgezeichnete Läufe‘",
+            value="3",
+            options=[ft.dropdown.Option(str(count), str(count)) for count in range(1, 6)],
+        )
+        variable = ft.Switch(
+            label="Unregelmäßig spielen (mit richtigen und falschen Antworten)", value=True
+        )
+        include_personal_best = ft.Switch(
+            label="Meinen persönlichen Rekord als zusätzlichen Läufer aufnehmen",
+            value=False,
+            disabled=personal_best is None,
+        )
         target = ft.TextField(
-            label="Zielpunkte (leer = bestes Ergebnis)",
-            hint_text=str(automatic_target),
+            label="Festes Ergebnisziel",
+            value=str(game.correct_target or min(game.task_count or 20, 40)),
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         vehicle = ft.Dropdown(
@@ -1070,24 +1218,49 @@ class MathAdventureApp:
                     ("🛸", "UFO"),
                     ("🐉", "Drache"),
                     ("🦄", "Einhorn"),
+                    ("🏍️", "Motorrad"),
+                    ("🛹", "Skateboard"),
+                    ("🚁", "Hubschrauber"),
+                    ("🦖", "Dinosaurier"),
+                    ("🐎", "Pferd"),
+                    ("🐬", "Delfin"),
                 )
             ],
         )
         error_text = ft.Text("", color=ERROR)
+        history_note = ft.Text(
+            "✓ Persönliche Historie verfügbar: Stufe 5 liegt etwas unter deinem Durchschnitt."
+            if own_summary
+            else (
+                "🔒 Der persönliche Durchschnitt wird nach der ersten Runde dieses Spiels "
+                "freigeschaltet."
+            ),
+            color=SUCCESS if own_summary else MUTED,
+            size=12,
+        )
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("🏁 Dein Rennen zusammenstellen"),
+            scrollable=True,
+            title=ft.Text("🏁 Rennen gegen Computergegner"),
             content=ft.Container(
-                width=480,
+                width=520,
                 content=ft.Column(
                     tight=True,
+                    spacing=10,
                     controls=[
                         ft.Text(
-                            "Standardmäßig treten die besten aufgezeichneten Läufe dieses "
-                            "exakten Spiels an. Du bestimmst Feld, Ziel und Fahrzeug.",
+                            "Stufen 1–10 entsprechen ungefähr P10 bis P90 einer erreichbaren "
+                            "Leistungsverteilung. Auch starke Gegner machen Fehler und wechseln "
+                            "ihr Tempo.",
                             color=MUTED,
                         ),
+                        source,
+                        history_note,
+                        ft.Text("Schwierigkeit und Läuferfeld", weight=ft.FontWeight.BOLD),
+                        levels,
                         opponent_count,
+                        include_personal_best,
+                        variable,
                         target,
                         vehicle,
                         error_text,
@@ -1097,31 +1270,84 @@ class MathAdventureApp:
         )
 
         def close(_: object) -> None:
-            dialog.open = False
-            self.page.update()
+            # Dialogs opened through Page.open() live in the page overlay. Merely
+            # setting ``open`` to False leaves that overlay registered in Flet and
+            # can keep its modal barrier in front of the game. Page.close() removes
+            # it through the matching public API and performs the required update.
+            self.page.close(dialog)
+            self._resume_after_dialog()
 
         def start(_: object) -> None:
             try:
-                count = int(opponent_count.value or str(default_count))
-                selected = available[:count]
-                target_points = (
-                    int(target.value.strip())
-                    if target.value and target.value.strip()
-                    else max(1, max(item.statistic.score for item in selected))
-                )
+                count = int(opponent_count.value or "3")
+                target_points = int(target.value or "0")
                 if target_points <= 0:
                     raise ValueError("Das Rennziel muss mindestens 1 Punkt sein.")
+                selected_source = source.value or "computer_static"
+                if selected_source == "recorded":
+                    competitors = recorded[:count]
+                else:
+                    selected_levels = parse_race_levels(levels.value or "")
+                    if selected_source == "computer_history" and own_summary is None:
+                        raise ValueError("Für diesen Gegner fehlt noch eine eigene Runde.")
+                    baseline = (
+                        sum(item.score for item in own_summary.rounds) / len(own_summary.rounds)
+                        if selected_source == "computer_history" and own_summary
+                        else None
+                    )
+                    # A five-minute preset must not leave a short target race parked
+                    # at zero for many seconds. Computer pacing follows the chosen
+                    # target (about three seconds per point), capped by the game's
+                    # official duration for comparability.
+                    target_duration = max(30, target_points * 3)
+                    duration = float(
+                        min(game.duration_seconds, target_duration)
+                        if game.duration_seconds
+                        else target_duration
+                    )
+                    competitors = [
+                        computer_competitor(
+                            game.definition_hash(),
+                            level=computer_level,
+                            target_points=target_points,
+                            duration_seconds=duration,
+                            baseline_points=baseline,
+                            seed=index + target_points,
+                            variable=bool(variable.value),
+                        )
+                        for index, computer_level in enumerate(selected_levels)
+                    ]
+                    if include_personal_best.value and personal_best is not None:
+                        competitors.insert(
+                            0,
+                            RaceCompetitor(
+                                f"{self.active_player.name} · persönlicher Rekord"
+                                if self.active_player
+                                else "Persönlicher Rekord",
+                                personal_best,
+                                self.active_player.icon if self.active_player else "🙂",
+                            ),
+                        )
+                if not competitors:
+                    raise ValueError("Keine aufgezeichneten Gegner verfügbar.")
             except ValueError as error:
-                error_text.value = str(error) or "Bitte gib eine gültige ganze Zahl ein."
+                error_text.value = str(error) or "Bitte prüfe die Eingaben."
                 self.page.update()
                 return
-            dialog.open = False
-            self._start_game(
-                game,
-                competitors=selected,
-                target_points=target_points,
-                race_vehicle=vehicle.value or "🚀",
-            )
+            self.page.close(dialog)
+            self.dialog_open = False
+
+            def begin_race() -> None:
+                self._start_game(
+                    game,
+                    competitors=competitors,
+                    target_points=target_points,
+                    race_vehicle=vehicle.value or "🚀",
+                )
+
+            # Give Flet one client update to remove the modal barrier before the
+            # game view is changed. Otherwise both updates can overtake each other.
+            threading.Timer(0.12, begin_race).start()
 
         dialog.actions = [
             ft.TextButton("Abbrechen", on_click=close),
@@ -1285,21 +1511,56 @@ class MathAdventureApp:
         )
 
     def _show_confirmation(self, title: str, message: str, action: Callable[[], None]) -> None:
+        self._pause_for_dialog()
         dialog = ft.AlertDialog(modal=True, title=ft.Text(title), content=ft.Text(message))
 
         def close(_: object) -> None:
-            dialog.open = False
-            self.page.update()
+            self.page.close(dialog)
+            self._resume_after_dialog()
 
         def confirm(_: object) -> None:
-            dialog.open = False
-            action()
+            self.page.close(dialog)
+            self.dialog_open = False
+            threading.Timer(0.12, action).start()
 
         dialog.actions = [
             ft.TextButton("Abbrechen", on_click=close),
             ft.ElevatedButton("Ja, fortfahren", on_click=confirm),
         ]
         self.page.open(dialog)
+
+    def _pause_for_dialog(self) -> None:
+        """Pause live movement and elapsed race time while a modal has focus."""
+
+        if self.dialog_open:
+            return
+        self.dialog_open = True
+        self.dialog_paused_at = time.monotonic()
+        self._cancel_ghost_tick()
+        self._cancel_auto_advance()
+        self._cancel_special_deadline()
+
+    def _resume_after_dialog(self) -> None:
+        if not self.dialog_open:
+            return
+        paused_for = max(0.0, time.monotonic() - self.dialog_paused_at)
+        if self.round_started_at:
+            self.round_started_at += paused_for
+        if isinstance(self.special_mode, BlitzMode | WarmUpMode):
+            self.special_mode.started_at += paused_for
+        self.dialog_open = False
+        if self.race_competitors and self.session and self.session.phase is RoundPhase.TASK:
+            self._schedule_ghost_tick()
+        if self.session and self.session.feedback and self.session.feedback.is_correct:
+            self._schedule_auto_advance(0.8)
+        if isinstance(self.special_mode, BlitzMode | WarmUpMode):
+            remaining = max(
+                0.0,
+                self.special_mode.duration_seconds
+                - (time.monotonic() - self.special_mode.started_at),
+            )
+            self.special_deadline_timer = threading.Timer(remaining, self._special_deadline_reached)
+            self.special_deadline_timer.start()
 
     def _choose_another(self) -> None:
         self.session, self.active_game, self.view = None, None, "play"
@@ -1317,7 +1578,87 @@ class MathAdventureApp:
         self._append_score_event(feedback.is_correct)
         if not feedback.is_correct and not feedback.is_task_complete:
             self.answer_field.value = ""
-        self.render()
+        self._update_task_controls()
+
+    def _update_task_controls(self) -> None:
+        """Update only changing task widgets without rebuilding the whole page."""
+
+        session = self._active_session()
+        task = session.current_task
+        if (
+            task is None
+            or self.task_number_text is None
+            or self.task_score_text is None
+            or self.task_progress is None
+            or self.task_prompt is None
+            or self.task_feedback is None
+            or self.task_action is None
+            or self.answer_field is None
+        ):
+            self.render()
+            return
+        number_text = self.task_number_text
+        score_text = self.task_score_text
+        progress = self.task_progress
+        prompt = self.task_prompt
+        feedback_box = self.task_feedback
+        action = self.task_action
+        answer = self.answer_field
+        points = self.live_score_events[-1].points_after if self.live_score_events else 0
+        wrong = len(session.results) - session.correct_count
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        timed = bool(self.active_game and self.active_game.duration_seconds)
+        number_text.value = (
+            f"{self.active_game.name if self.active_game else 'Spiel'} · "
+            f"Aufgabe {session.task_number}/{session.task_count}"
+        )
+        score_text.value = (
+            f"✓ {session.correct_count}   ✕ {wrong}   ⭐ {points} P   "
+            f"{'⏳' if timed else '⏱️'} {elapsed:.0f} s"
+        )
+        progress.value = session.progress
+        prompt.value = task.prompt
+        feedback = session.feedback
+        feedback_box.visible = feedback is not None
+        feedback_box.padding = 12
+        feedback_box.border_radius = 12
+        if feedback is None:
+            answer.value = ""
+            answer.disabled = False
+            answer.error_text = None
+            action.text = "Antwort prüfen"
+            action.on_click = self._on_submit_clicked
+            action.visible = True
+        elif feedback.is_correct:
+            feedback_box.bgcolor = "#E6F4EA"
+            feedback_box.content = ft.Text(
+                "✓ Richtig! Super gelöst.", size=18, color=SUCCESS, weight=ft.FontWeight.BOLD
+            )
+            action.visible = False
+            self._schedule_auto_advance(0.8)
+        elif not feedback.is_task_complete:
+            feedback_box.bgcolor = "#FEF9E7"
+            feedback_box.content = ft.Text(
+                "⚠️ Nicht ganz. Du hast noch 1 Versuch!",
+                size=18,
+                color=WARNING,
+                weight=ft.FontWeight.BOLD,
+            )
+        else:
+            feedback_box.bgcolor = "#FCE8E6"
+            feedback_box.content = ft.Text(
+                f"✕ Die richtige Antwort ist {feedback.expected_answer}.",
+                size=18,
+                color=ERROR,
+                weight=ft.FontWeight.BOLD,
+            )
+            answer.disabled = True
+            action.text = "Nächste Aufgabe (Enter)"
+            action.on_click = lambda _: self._next_task()
+            action.visible = True
+        self.page.update()
+        if feedback is None:
+            answer.focus()
 
     def _append_score_event(self, correct: bool) -> None:
         game = self.active_game
@@ -1332,11 +1673,16 @@ class MathAdventureApp:
                 points_after=points,
             )
         )
+        if self.race_competitors and not self.dialog_open:
+            self._refresh_race_panel()
 
     def _next_task(self) -> None:
         self._cancel_auto_advance()
         self._active_session().advance_to_next_task()
-        self.render()
+        if self._active_session().phase is RoundPhase.FINISHED:
+            self.render()
+        else:
+            self._update_task_controls()
 
     def _schedule_auto_advance(self, seconds: float) -> None:
         self._cancel_auto_advance()
@@ -1356,12 +1702,23 @@ class MathAdventureApp:
     def _ghost_tick(self) -> None:
         self.ghost_tick_timer = None
         if (
-            self.race_competitors
+            not self.dialog_open
+            and self.race_competitors
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
-            and self.session.feedback is None
+            and self.race_live_panel is not None
         ):
-            self.render()
+            self._refresh_race_panel()
+            self._schedule_ghost_tick()
+
+    def _refresh_race_panel(self) -> None:
+        """Refresh positions immediately while retaining the rest of the task UI."""
+
+        if self.race_live_panel is None:
+            return
+        refreshed = self._build_race_panel()
+        self.race_live_panel.content = refreshed.content
+        self.race_live_panel.update()
 
     def _cancel_ghost_tick(self) -> None:
         if self.ghost_tick_timer is not None:
