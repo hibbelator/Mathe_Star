@@ -1,4 +1,4 @@
-"""Small, explicit round orchestration for the first playable UI slice."""
+"""Small, explicit round orchestration for the playable UI slice."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from math_game.generators.contracts import TaskGenerator
 
 
 class RoundPhase(StrEnum):
-    """Visible phases required by the first end-to-end round."""
+    """Visible phases required by the end-to-end round."""
 
     READY = "ready"
     TASK = "task"
@@ -28,6 +28,8 @@ class AnswerFeedback:
     is_correct: bool
     given_answer: int
     expected_answer: int
+    attempts_left: int = 0
+    is_task_complete: bool = True
 
 
 @dataclass(slots=True)
@@ -37,14 +39,18 @@ class RoundSession:
     generator: TaskGenerator
     definition: OperationDefinition
     task_count: int = 5
+    max_attempts_per_task: int = 1
     phase: RoundPhase = field(init=False, default=RoundPhase.READY)
     current_task: ArithmeticTask | None = field(init=False, default=None)
     feedback: AnswerFeedback | None = field(init=False, default=None)
     results: list[TaskResult] = field(init=False, default_factory=lambda: [])
+    attempts_on_current_task: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
         if self.task_count <= 0:
             raise ValueError("task_count must be positive")
+        if self.max_attempts_per_task <= 0:
+            raise ValueError("max_attempts_per_task must be positive")
 
     @property
     def task_number(self) -> int:
@@ -69,6 +75,7 @@ class RoundSession:
 
         self.results.clear()
         self.feedback = None
+        self.attempts_on_current_task = 0
         self.current_task = self.generator.generate(self.definition)
         self.phase = RoundPhase.TASK
 
@@ -86,31 +93,37 @@ class RoundSession:
         except ValueError as error:
             raise ValueError("Die Antwort muss eine ganze Zahl sein.") from error
 
+        self.attempts_on_current_task += 1
         is_correct = given_answer == self.current_task.expected_answer
-        self.results.append(
-            TaskResult(
-                task_id=f"task-{len(self.results) + 1}",
-                answer_status=AnswerStatus.CORRECT if is_correct else AnswerStatus.INCORRECT,
-                expected_answer=self.current_task.expected_answer,
-                given_answer=given_answer,
-                elapsed_ms=0,
+        attempts_left = max(0, self.max_attempts_per_task - self.attempts_on_current_task)
+        is_task_complete = is_correct or attempts_left == 0
+
+        if is_task_complete:
+            self.results.append(
+                TaskResult(
+                    task_id=f"task-{len(self.results) + 1}",
+                    answer_status=AnswerStatus.CORRECT if is_correct else AnswerStatus.INCORRECT,
+                    expected_answer=self.current_task.expected_answer,
+                    given_answer=given_answer,
+                    elapsed_ms=0,
+                )
             )
-        )
+
         self.feedback = AnswerFeedback(
             is_correct=is_correct,
             given_answer=given_answer,
             expected_answer=self.current_task.expected_answer,
+            attempts_left=attempts_left,
+            is_task_complete=is_task_complete,
         )
-        self.phase = RoundPhase.FEEDBACK
+        self.phase = RoundPhase.FEEDBACK if is_task_complete else RoundPhase.TASK
         return self.feedback
 
-    def continue_round(self) -> None:
-        """Advance after feedback or finish when all tasks are answered."""
-
-        if self.phase is not RoundPhase.FEEDBACK:
-            raise RuntimeError("the round can only continue after feedback")
+    def advance_to_next_task(self) -> None:
+        """Advance directly to the next task or finish when all tasks are answered."""
 
         self.feedback = None
+        self.attempts_on_current_task = 0
         if len(self.results) >= self.task_count:
             self.current_task = None
             self.phase = RoundPhase.FINISHED
@@ -118,3 +131,8 @@ class RoundSession:
 
         self.current_task = self.generator.generate(self.definition)
         self.phase = RoundPhase.TASK
+
+    def continue_round(self) -> None:
+        """Backwards compatibility helper for existing callers."""
+
+        self.advance_to_next_task()

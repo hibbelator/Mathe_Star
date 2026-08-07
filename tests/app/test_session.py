@@ -23,7 +23,12 @@ class SequenceGenerator:
         )
 
 
-def make_session(*, answers: list[int], task_count: int = 2) -> RoundSession:
+def make_session(
+    *,
+    answers: list[int],
+    task_count: int = 2,
+    max_attempts_per_task: int = 1,
+) -> RoundSession:
     return RoundSession(
         generator=SequenceGenerator(answers),
         definition=OperationDefinition(
@@ -32,6 +37,7 @@ def make_session(*, answers: list[int], task_count: int = 2) -> RoundSession:
             right=OperandRange(1, 10),
         ),
         task_count=task_count,
+        max_attempts_per_task=max_attempts_per_task,
     )
 
 
@@ -48,7 +54,7 @@ def test_round_runs_from_start_through_feedback_to_finish() -> None:
     assert session.correct_count == 1
     assert session.progress == 0.5
 
-    session.continue_round()
+    session.advance_to_next_task()
     assert session.phase is RoundPhase.TASK
     assert session.task_number == 2
 
@@ -57,10 +63,29 @@ def test_round_runs_from_start_through_feedback_to_finish() -> None:
     assert second_feedback.expected_answer == 7
     assert session.results[-1].answer_status is AnswerStatus.INCORRECT
 
-    session.continue_round()
+    session.advance_to_next_task()
     assert session.phase is RoundPhase.FINISHED
     assert session.current_task is None
     assert session.progress == 1.0
+
+
+def test_second_chance_allows_retry_on_wrong_answer() -> None:
+    session = make_session(answers=[10], task_count=1, max_attempts_per_task=2)
+    session.start()
+
+    fb1 = session.submit_answer("5")
+    assert fb1.is_correct is False
+    assert fb1.attempts_left == 1
+    assert fb1.is_task_complete is False
+    assert session.phase is RoundPhase.TASK
+    assert len(session.results) == 0
+
+    fb2 = session.submit_answer("10")
+    assert fb2.is_correct is True
+    assert fb2.attempts_left == 0
+    assert fb2.is_task_complete is True
+    assert session.phase is RoundPhase.FEEDBACK
+    assert session.correct_count == 1
 
 
 @pytest.mark.parametrize(
@@ -96,7 +121,7 @@ def test_start_resets_a_completed_round() -> None:
     session = make_session(answers=[4, 6], task_count=1)
     session.start()
     session.submit_answer("4")
-    session.continue_round()
+    session.advance_to_next_task()
 
     session.start()
 
