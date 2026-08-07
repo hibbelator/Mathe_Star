@@ -1199,8 +1199,11 @@ class MathAdventureApp:
         )
 
         def close(_: object) -> None:
-            dialog.open = False
-            self.page.update()
+            # Dialogs opened through Page.open() live in the page overlay. Merely
+            # setting ``open`` to False leaves that overlay registered in Flet and
+            # can keep its modal barrier in front of the game. Page.close() removes
+            # it through the matching public API and performs the required update.
+            self.page.close(dialog)
 
         def start(_: object) -> None:
             try:
@@ -1243,7 +1246,7 @@ class MathAdventureApp:
                 error_text.value = str(error) or "Bitte prüfe die Eingaben."
                 self.page.update()
                 return
-            dialog.open = False
+            self.page.close(dialog)
             self._start_game(
                 game,
                 competitors=competitors,
@@ -1416,11 +1419,10 @@ class MathAdventureApp:
         dialog = ft.AlertDialog(modal=True, title=ft.Text(title), content=ft.Text(message))
 
         def close(_: object) -> None:
-            dialog.open = False
-            self.page.update()
+            self.page.close(dialog)
 
         def confirm(_: object) -> None:
-            dialog.open = False
+            self.page.close(dialog)
             action()
 
         dialog.actions = [
