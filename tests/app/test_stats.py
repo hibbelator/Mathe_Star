@@ -110,7 +110,7 @@ def test_live_score_events_and_explicit_score_survive_round_trip(tmp_path: Path)
 def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: Path) -> None:
     database = AppDatabase(tmp_path / "app.sqlite3")
     players = PlayerRepository(database)
-    mia, ben, lio = players.add("Mia"), players.add("Ben"), players.add("Lio")
+    mia, ben, lio = players.add("Mia"), players.add("Ben", icon="🦊"), players.add("Lio")
     repository = StatisticsRepository(database)
 
     def add_run(player_id: int, definition_hash: str, score: int) -> None:
@@ -137,6 +137,7 @@ def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: P
 
     assert [item.player_name for item in competitors] == ["Ben", "Lio"]
     assert [item.statistic.score for item in competitors] == [7, 5]
+    assert [item.player_icon for item in competitors] == ["🦊", "🙂"]
 
 
 def test_computer_rival_is_fallible_repeatable_and_level_scaled() -> None:

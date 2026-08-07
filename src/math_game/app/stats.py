@@ -84,6 +84,72 @@ class RaceCompetitor:
 
     player_name: str
     statistic: RoundStatistic
+    player_icon: str = "🤖"
+
+
+def computer_competitor(
+    definition_hash: str,
+    *,
+    level: int,
+    target_points: int,
+    duration_seconds: float,
+    baseline_points: float | None = None,
+    seed: int = 0,
+    variable: bool = True,
+) -> RaceCompetitor:
+    """Create a fallible computer run for a race.
+
+    Levels are percentile-like steps around the supplied personal baseline.  Level 5
+    is deliberately a little slower than average, while level 10 is roughly the
+    90th percentile: difficult, but not an implausible perfect machine.
+    """
+
+    if not 1 <= level <= 10:
+        raise ValueError("Die Computerstufe muss zwischen 1 und 10 liegen.")
+    if target_points <= 0 or duration_seconds <= 0:
+        raise ValueError("Rennziel und Renndauer müssen positiv sein.")
+    rng = random.Random(seed + level * 7919)
+    percentile = 0.10 + (level - 1) * (0.80 / 9)
+    # A compact approximation of a normal quantile is sufficient for game balancing.
+    z_score = math.log(percentile / (1 - percentile)) / 1.7
+    base = baseline_points if baseline_points is not None else target_points * 0.72
+    expected_points = max(1.0, base * (0.92 + z_score * 0.13))
+    accuracy = min(0.97, max(0.58, 0.70 + level * 0.025))
+    attempts = max(target_points + 3, round(expected_points / accuracy) + 3)
+    interval = duration_seconds / attempts
+    points = 0
+    events: list[ScoreEvent] = []
+    for attempt in range(1, attempts + 1):
+        correct = rng.random() < accuracy
+        points = max(0, points + (1 if correct else -1))
+        wobble = rng.uniform(0.72, 1.28) if variable else 1.0
+        event_time = min(duration_seconds, attempt * interval * wobble)
+        events.append(ScoreEvent(event_time, correct, points))
+    events.sort(key=lambda event: event.elapsed_seconds)
+    # Recalculate the visible score after sorting jittered events.
+    normalized: list[ScoreEvent] = []
+    points = 0
+    for event in events:
+        points = max(0, points + (1 if event.correct else -1))
+        normalized.append(ScoreEvent(event.elapsed_seconds, event.correct, points))
+    correct_count = sum(event.correct for event in normalized)
+    statistic = RoundStatistic(
+        player_id=0,
+        game_id="computer",
+        game_name="Computergegner",
+        definition_hash=definition_hash,
+        correct=correct_count,
+        total=len(normalized),
+        elapsed_seconds=duration_seconds,
+        events=tuple(normalized),
+        score_value=points,
+    )
+    computer_icons = ("🤖", "👾", "🦾", "🧠", "⚙️")
+    return RaceCompetitor(
+        f"Computer · Stufe {level} · P{percentile:.0%}",
+        statistic,
+        computer_icons[(level - 1) % len(computer_icons)],
+    )
 
 
 def computer_competitor(
@@ -234,7 +300,7 @@ class StatisticsRepository:
             raise ValueError("Ein Rennen braucht zwischen 1 und 8 Gegnern.")
         with self.database.connect() as connection:
             rows = connection.execute(
-                """SELECT s.player_id, p.name, s.game_id, s.game_name, s.correct, s.total,
+                """SELECT s.player_id, p.name, p.icon, s.game_id, s.game_name, s.correct, s.total,
                           s.elapsed_seconds, s.played_at, s.events_json, s.score_value
                    FROM round_statistics AS s
                    JOIN players AS p ON p.id = s.player_id
@@ -258,6 +324,7 @@ class StatisticsRepository:
                     ),
                     score_value=(None if row["score_value"] is None else int(row["score_value"])),
                 ),
+                player_icon=str(row["icon"]),
             )
             for row in rows
         ]

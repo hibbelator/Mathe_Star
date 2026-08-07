@@ -34,3 +34,13 @@ def test_last_selected_player_is_restored(tmp_path: Path) -> None:
     assert PlayerRepository(database).last_used() == lina
     repository.remember(ben.id)
     assert PlayerRepository(database).last_used() == ben
+
+
+def test_player_icon_is_persisted_and_restored(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    repository = PlayerRepository(database)
+
+    player = repository.add("Lina", icon="🦊")
+
+    assert repository.all()[0].icon == "🦊"
+    assert repository.last_used() == player

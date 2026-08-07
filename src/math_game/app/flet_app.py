@@ -390,13 +390,42 @@ class MathAdventureApp:
     def _players_view(self) -> ft.Column:
         name = ft.TextField(label="Name des Kindes")
         image = ft.TextField(label="Bilddatei (optional)", hint_text="z. B. /Bilder/lina.png")
-        controls: list[ft.Control] = [name, image]
+        icon = ft.Dropdown(
+            label="Spielericon",
+            value="🙂",
+            options=[
+                ft.dropdown.Option(value, f"{value} {label}")
+                for value, label in (
+                    ("🙂", "Fröhlich"),
+                    ("😎", "Cool"),
+                    ("🤓", "Schlau"),
+                    ("🧒", "Kind"),
+                    ("👧", "Mädchen"),
+                    ("👦", "Junge"),
+                    ("🦊", "Fuchs"),
+                    ("🐼", "Panda"),
+                    ("🐯", "Tiger"),
+                    ("🦁", "Löwe"),
+                    ("🐸", "Frosch"),
+                    ("🦄", "Einhorn"),
+                    ("🐲", "Drache"),
+                    ("🧙", "Zauberer"),
+                    ("🥷", "Ninja"),
+                    ("🦸", "Superheld"),
+                    ("👩‍🚀", "Astronautin"),
+                    ("👨‍🚀", "Astronaut"),
+                )
+            ],
+        )
+        controls: list[ft.Control] = [name, icon, image]
         if self.player_error:
             controls.append(ft.Text(self.player_error, color=ERROR))
 
         def create(_: object) -> None:
             try:
-                self.active_player = self.players.add(name.value or "", image.value or None)
+                self.active_player = self.players.add(
+                    name.value or "", image.value or None, icon.value or "🙂"
+                )
                 self.player_error = ""
                 self._navigate("menu")
             except ValueError as error:
@@ -405,7 +434,7 @@ class MathAdventureApp:
 
         controls.append(self._action_button("Spieler anlegen", create))
         for player in self.players.all():
-            avatar: ft.Control = ft.CircleAvatar(content=ft.Text(player.name[:1].upper()))
+            avatar: ft.Control = ft.CircleAvatar(content=ft.Text(player.icon, size=22))
             if player.image_path:
                 avatar = ft.CircleAvatar(foreground_image_src=player.image_path)
             controls.append(
@@ -735,10 +764,29 @@ class MathAdventureApp:
 
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
         own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
-        racers: list[tuple[str, str, int, str]] = [
-            ("Du", self.race_vehicle, own_points, "Dein aktueller Lauf")
+        own_name = self.active_player.name if self.active_player else "Du"
+        own_icon = self.active_player.icon if self.active_player else "🙂"
+        racers: list[tuple[str, str, str, int, str]] = [
+            (own_name, own_icon, self.race_vehicle, own_points, "Dein aktueller Lauf")
         ]
-        opponent_vehicles = ("🏎️", "🚀", "🛸", "🚲", "🐉", "🛶", "🐆", "🦄")
+        opponent_vehicles = (
+            "🏎️",
+            "🚀",
+            "🛸",
+            "🚲",
+            "🐉",
+            "🛶",
+            "🐆",
+            "🦄",
+            "🏍️",
+            "🛹",
+            "🛼",
+            "🚁",
+            "🦖",
+            "🐎",
+            "🦅",
+            "🐬",
+        )
         for index, competitor in enumerate(self.race_competitors):
             events = competitor.statistic.events
             past = [event for event in events if event.elapsed_seconds <= elapsed]
@@ -752,25 +800,29 @@ class MathAdventureApp:
             racers.append(
                 (
                     competitor.player_name,
+                    competitor.player_icon,
                     opponent_vehicles[index % len(opponent_vehicles)],
                     points,
                     detail,
                 )
             )
-        ordered = sorted(racers, key=lambda racer: racer[2], reverse=True)
-        own_rank = next(index for index, racer in enumerate(ordered, start=1) if racer[0] == "Du")
-        leading_points = ordered[0][2]
+        ordered = sorted(racers, key=lambda racer: racer[3], reverse=True)
+        own_rank = next(
+            index for index, racer in enumerate(ordered, start=1) if racer[0] == own_name
+        )
+        leading_points = ordered[0][3]
         tracks = [
             self._race_track(
                 name,
+                player_icon,
                 vehicle,
                 points,
                 f"{detail} · {leading_points - points} P Rückstand"
                 if points < leading_points
                 else f"{detail} · in Führung",
-                name == "Du",
+                name == own_name,
             )
-            for name, vehicle, points, detail in racers
+            for name, player_icon, vehicle, points, detail in racers
         ]
         return ft.Container(
             padding=16,
@@ -799,7 +851,13 @@ class MathAdventureApp:
         )
 
     def _race_track(
-        self, name: str, vehicle: str, points: int, detail: str, is_player: bool
+        self,
+        name: str,
+        player_icon: str,
+        vehicle: str,
+        points: int,
+        detail: str,
+        is_player: bool,
     ) -> ft.Control:
         target = max(1, self.race_target_points)
         progress = min(1.0, max(0.0, points / target))
@@ -815,6 +873,7 @@ class MathAdventureApp:
                 controls=[
                     ft.Row(
                         controls=[
+                            ft.Text(player_icon, size=22),
                             ft.Text(name, expand=True, weight=ft.FontWeight.BOLD),
                             ft.Text(f"{points} P · {detail}", size=11, color=MUTED),
                         ]
@@ -1154,6 +1213,12 @@ class MathAdventureApp:
                     ("🛸", "UFO"),
                     ("🐉", "Drache"),
                     ("🦄", "Einhorn"),
+                    ("🏍️", "Motorrad"),
+                    ("🛹", "Skateboard"),
+                    ("🚁", "Hubschrauber"),
+                    ("🦖", "Dinosaurier"),
+                    ("🐎", "Pferd"),
+                    ("🐬", "Delfin"),
                 )
             ],
         )
@@ -1170,12 +1235,13 @@ class MathAdventureApp:
         )
         dialog = ft.AlertDialog(
             modal=True,
+            scrollable=True,
             title=ft.Text("🏁 Rennen gegen Computergegner"),
             content=ft.Container(
                 width=520,
                 content=ft.Column(
                     tight=True,
-                    scroll=ft.ScrollMode.AUTO,
+                    spacing=10,
                     controls=[
                         ft.Text(
                             "Stufen 1–10 entsprechen ungefähr P10 bis P90 einer erreichbaren "
@@ -1238,7 +1304,14 @@ class MathAdventureApp:
                     ]
                     if include_personal_best.value and personal_best is not None:
                         competitors.insert(
-                            0, RaceCompetitor("Dein persönlicher Rekord", personal_best)
+                            0,
+                            RaceCompetitor(
+                                f"{self.active_player.name} · persönlicher Rekord"
+                                if self.active_player
+                                else "Persönlicher Rekord",
+                                personal_best,
+                                self.active_player.icon if self.active_player else "🙂",
+                            ),
                         )
                 if not competitors:
                     raise ValueError("Keine aufgezeichneten Gegner verfügbar.")
