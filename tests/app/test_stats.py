@@ -2,7 +2,12 @@ from pathlib import Path
 
 from math_game.app.database import AppDatabase
 from math_game.app.players import PlayerRepository
-from math_game.app.stats import RoundStatistic, ScoreEvent, StatisticsRepository
+from math_game.app.stats import (
+    RoundStatistic,
+    ScoreEvent,
+    StatisticsRepository,
+    computer_competitor,
+)
 
 
 def test_statistics_persist_and_choose_best_round(tmp_path: Path) -> None:
@@ -105,7 +110,7 @@ def test_live_score_events_and_explicit_score_survive_round_trip(tmp_path: Path)
 def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: Path) -> None:
     database = AppDatabase(tmp_path / "app.sqlite3")
     players = PlayerRepository(database)
-    mia, ben, lio = players.add("Mia"), players.add("Ben"), players.add("Lio")
+    mia, ben, lio = players.add("Mia"), players.add("Ben", icon="🦊"), players.add("Lio")
     repository = StatisticsRepository(database)
 
     def add_run(player_id: int, definition_hash: str, score: int) -> None:
@@ -132,3 +137,32 @@ def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: P
 
     assert [item.player_name for item in competitors] == ["Ben", "Lio"]
     assert [item.statistic.score for item in competitors] == [7, 5]
+    assert [item.player_icon for item in competitors] == ["🦊", "🙂"]
+
+
+def test_computer_rival_is_fallible_repeatable_and_level_scaled() -> None:
+    easy = computer_competitor("sha256:a", level=1, target_points=20, duration_seconds=60, seed=4)
+    hard = computer_competitor("sha256:a", level=10, target_points=20, duration_seconds=60, seed=4)
+    repeated = computer_competitor(
+        "sha256:a", level=10, target_points=20, duration_seconds=60, seed=4
+    )
+
+    assert easy.player_name.endswith("P10%")
+    assert hard.player_name.endswith("P90%")
+    assert hard.statistic.events == repeated.statistic.events
+    assert any(not event.correct for event in hard.statistic.events)
+    assert hard.statistic.score > easy.statistic.score
+
+
+def test_linear_computer_rival_has_regular_event_intervals() -> None:
+    rival = computer_competitor(
+        "sha256:a",
+        level=5,
+        target_points=10,
+        duration_seconds=30,
+        variable=False,
+    )
+    times = [event.elapsed_seconds for event in rival.statistic.events]
+    intervals = [round(right - left, 6) for left, right in zip([0.0, *times], times, strict=False)]
+
+    assert len(set(intervals)) == 1

@@ -70,3 +70,6 @@ class AppDatabase:
             )
         if "score_value" not in columns:
             connection.execute("ALTER TABLE round_statistics ADD COLUMN score_value INTEGER")
+        player_columns = {row["name"] for row in connection.execute("PRAGMA table_info(players)")}
+        if "icon" not in player_columns:
+            connection.execute("ALTER TABLE players ADD COLUMN icon TEXT NOT NULL DEFAULT '🙂'")
