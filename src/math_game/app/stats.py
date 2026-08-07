@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import cast
+
+from math_game.app.database import AppDatabase
 
 
 @dataclass(frozen=True, slots=True)
 class RoundStatistic:
+    player_id: int
     game_id: str
     game_name: str
+    definition_hash: str
     correct: int
     total: int
     elapsed_seconds: float
@@ -31,47 +32,47 @@ class RoundStatistic:
 
 @dataclass(slots=True)
 class StatisticsRepository:
-    path: Path = field(default_factory=lambda: Path.home() / ".math_game" / "statistics.json")
+    database: AppDatabase = field(default_factory=AppDatabase)
 
-    def load(self) -> list[RoundStatistic]:
-        if not self.path.exists():
-            return []
-        raw: object = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            raise ValueError("Die Statistikdatei muss eine Liste enthalten.")
-        items = cast(list[dict[str, object]], raw)
-        return [
-            RoundStatistic(
-                game_id=str(item["game_id"]),
-                game_name=str(item["game_name"]),
-                correct=int(cast(int | str, item["correct"])),
-                total=int(cast(int | str, item["total"])),
-                elapsed_seconds=float(cast(float | int | str, item["elapsed_seconds"])),
-                played_at=str(item["played_at"]),
-            )
-            for item in items
-        ]
+    def load(self, player_id: int | None = None) -> list[RoundStatistic]:
+        query = """SELECT player_id, game_id, game_name, definition_hash, correct, total,
+                   elapsed_seconds, played_at FROM round_statistics"""
+        parameters: tuple[object, ...] = ()
+        if player_id is not None:
+            query += " WHERE player_id = ?"
+            parameters = (player_id,)
+        query += " ORDER BY played_at DESC, id DESC"
+        with self.database.connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [RoundStatistic(**dict(row)) for row in rows]
 
     def add(self, statistic: RoundStatistic) -> None:
-        statistics = self.load()
-        statistics.append(statistic)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps([asdict(item) for item in statistics], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO round_statistics(
+                    player_id, game_id, game_name, definition_hash, correct, total,
+                    elapsed_seconds, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    statistic.player_id,
+                    statistic.game_id,
+                    statistic.game_name,
+                    statistic.definition_hash,
+                    statistic.correct,
+                    statistic.total,
+                    statistic.elapsed_seconds,
+                    statistic.played_at,
+                ),
+            )
 
-    def best_by_game(self) -> dict[str, RoundStatistic]:
+    def best_by_game(self, player_id: int | None = None) -> dict[str, RoundStatistic]:
         best: dict[str, RoundStatistic] = {}
-        for item in self.load():
-            previous = best.get(item.game_id)
+        for item in self.load(player_id):
+            previous = best.get(item.definition_hash)
             score = (item.accuracy, item.correct, -item.elapsed_seconds)
             if previous is None or score > (
                 previous.accuracy,
                 previous.correct,
                 -previous.elapsed_seconds,
             ):
-                best[item.game_id] = item
+                best[item.definition_hash] = item
         return best
