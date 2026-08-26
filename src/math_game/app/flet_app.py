@@ -147,6 +147,7 @@ class MathAdventureApp:
         self.task_prompt: ft.Text | None = None
         self.task_feedback: ft.Container | None = None
         self.task_action: ft.ElevatedButton | None = None
+        self.root_container: ft.Container | None = None
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -181,7 +182,6 @@ class MathAdventureApp:
         # recurring race callback first; a live task schedules exactly one new
         # callback below, while a finished round deliberately schedules none.
         self._cancel_ghost_tick()
-        self.page.clean()
         if self.special_mode is not None:
             content = self._special_mode_view()
         elif self.session is not None and self.session.phase not in {
@@ -203,15 +203,18 @@ class MathAdventureApp:
         else:
             content = self._main_menu_view()
         metrics = layout_metrics(getattr(self.page, "width", None))
-        self.page.add(
-            ft.Container(
-                width=metrics.content_width,
-                padding=metrics.padding,
-                bgcolor=CARD,
-                border_radius=18 if metrics.compact else 28,
-                content=content,
-            )
+        root_container = ft.Container(
+            width=metrics.content_width,
+            padding=metrics.padding,
+            bgcolor=CARD,
+            border_radius=18 if metrics.compact else 28,
+            content=content,
         )
+        # Build the complete replacement before clearing the current page. If
+        # constructing a view fails, the last usable menu remains visible.
+        self.page.clean()
+        self.root_container = root_container
+        self.page.add(root_container)
         self.page.update()
         if (
             self.answer_field is not None
@@ -2145,9 +2148,22 @@ class MathAdventureApp:
             self.answer_field.update()
 
     def _on_resize(self, _: object) -> None:
-        """Rebuild controls at phone/tablet/desktop breakpoint changes."""
+        """Resize the mounted card without rebuilding the complete page.
 
-        self.render()
+        Browser scrollbars and Android system UI can emit resize events while a
+        menu click is already replacing the view. A second full ``render()`` in
+        that situation used to clear the new view again and could leave the
+        client white. Updating the responsive shell in place avoids that race.
+        """
+
+        root_container = self.root_container
+        if root_container is None:
+            return
+        metrics = layout_metrics(getattr(self.page, "width", None))
+        root_container.width = metrics.content_width
+        root_container.padding = metrics.padding
+        root_container.border_radius = 18 if metrics.compact else 28
+        root_container.update()
 
     def _on_lifecycle_change(self, event: object) -> None:
         """Pause all wall-clock UI work while Android is in the background."""

@@ -502,6 +502,28 @@ def test_task_view_mounts_answer_field_before_render_focuses_it() -> None:
     assert dynamic_app.answer_field in view.controls
 
 
+def test_resize_updates_mounted_shell_without_full_render() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    updates: list[str] = []
+    dynamic_app.page = SimpleNamespace(width=360)
+    dynamic_app.root_container = SimpleNamespace(
+        width=760,
+        padding=32,
+        border_radius=28,
+        update=lambda: updates.append("updated"),
+    )
+    dynamic_app.render = lambda: (_ for _ in ()).throw(AssertionError("full render"))
+
+    dynamic_app._on_resize(None)
+
+    metrics = layout_metrics(360)
+    assert dynamic_app.root_container.width == metrics.content_width
+    assert dynamic_app.root_container.padding == metrics.padding
+    assert dynamic_app.root_container.border_radius == 18
+    assert updates == ["updated"]
+
+
 def test_recording_end_is_not_presented_as_finish_line() -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
