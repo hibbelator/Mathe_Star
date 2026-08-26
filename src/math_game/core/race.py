@@ -27,6 +27,7 @@ class RaceEventKind(StrEnum):
     TIMEOUT = "timeout"
     ABORT = "abort"
     TIME_ELAPSED = "time_elapsed"
+    RECORDING_ENDED = "recording_ended"
 
 
 class RacerStatus(StrEnum):
@@ -34,6 +35,7 @@ class RacerStatus(StrEnum):
     FINISHED = "finished"
     ELIMINATED = "eliminated"
     ABORTED = "aborted"
+    RECORDING_ENDED = "recording_ended"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +100,7 @@ class RacerState:
     correct_answers: int = 0
     completed_tasks: int = 0
     errors: int = 0
+    timeouts: int = 0
     streak: int = 0
     elapsed_seconds: float = 0
     finish_time: float | None = None
@@ -112,6 +115,15 @@ class RaceStanding:
     status: RacerStatus
     progress: float
     sort_key: tuple[float, ...]
+    score: int
+    correct_answers: int
+    completed_tasks: int
+    errors: int
+    timeouts: int
+    streak: int
+    elapsed_seconds: float
+    finish_time: float | None
+    end_reason: EndReason | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +250,14 @@ def _apply_to_racer(config: RaceConfig, racer: RacerState, event: RaceEvent) -> 
             status=RacerStatus.ABORTED,
             end_reason=EndReason.ABORTED,
         )
+    if event.kind is RaceEventKind.RECORDING_ENDED:
+        return replace(
+            racer,
+            elapsed_seconds=elapsed,
+            finish_time=elapsed,
+            status=RacerStatus.RECORDING_ENDED,
+            end_reason=EndReason.COMPLETED,
+        )
     if event.kind is RaceEventKind.CORRECT_ANSWER:
         return replace(
             racer,
@@ -252,6 +272,7 @@ def _apply_to_racer(config: RaceConfig, racer: RacerState, event: RaceEvent) -> 
         score=racer.score + config.wrong_answer_penalty,
         completed_tasks=racer.completed_tasks + 1,
         errors=racer.errors + 1,
+        timeouts=racer.timeouts + int(event.kind is RaceEventKind.TIMEOUT),
         streak=0,
         elapsed_seconds=elapsed,
     )
@@ -324,7 +345,22 @@ def _standings(config: RaceConfig, racers: list[RacerState]) -> tuple[RaceStandi
         if racer_key != previous:
             rank = position
         result.append(
-            RaceStanding(racer.racer_id, rank, racer.status, progress(config, racer), racer_key)
+            RaceStanding(
+                racer.racer_id,
+                rank,
+                racer.status,
+                progress(config, racer),
+                racer_key,
+                racer.score,
+                racer.correct_answers,
+                racer.completed_tasks,
+                racer.errors,
+                racer.timeouts,
+                racer.streak,
+                racer.elapsed_seconds,
+                racer.finish_time,
+                racer.end_reason,
+            )
         )
         previous = racer_key
     return tuple(result)

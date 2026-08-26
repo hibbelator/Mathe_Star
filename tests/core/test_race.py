@@ -64,6 +64,22 @@ def test_time_is_an_explicit_event_and_progress_is_clamped() -> None:
     assert progress(config, state.racers[0]) == 1
 
 
+def test_standing_is_a_complete_ui_projection_and_counts_timeouts() -> None:
+    config = RaceConfig(RaceKind.TASKS, task_target=3, task_timeout_seconds=5)
+    state = apply_race_event(
+        config,
+        RaceState.create(["Ada"]),
+        RaceEvent(RaceEventKind.TIMEOUT, "Ada", 4),
+    )
+
+    standing = state.standings[0]
+    assert standing.completed_tasks == 1
+    assert standing.timeouts == 1
+    assert standing.errors == 1
+    assert standing.elapsed_seconds == 4
+    assert standing.end_reason is None
+
+
 def test_abort_has_no_winner() -> None:
     state = apply_race_event(
         RaceConfig(RaceKind.COMBO, combo_target=3),
