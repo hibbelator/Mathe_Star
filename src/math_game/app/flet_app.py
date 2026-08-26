@@ -6,18 +6,15 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shutil
 import sys
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 import flet as ft
 
-from math_game.app.database import AppDatabase
 from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
 from math_game.app.stats import (
@@ -148,7 +145,6 @@ class MathAdventureApp:
         self.task_feedback: ft.Container | None = None
         self.task_action: ft.ElevatedButton | None = None
         self.root_container: ft.Container | None = None
-        self.pending_overlay_controls: list[ft.Control] = []
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -183,7 +179,6 @@ class MathAdventureApp:
         # recurring race callback first; a live task schedules exactly one new
         # callback below, while a finished round deliberately schedules none.
         self._cancel_ghost_tick()
-        self.pending_overlay_controls = []
         if self.special_mode is not None:
             content = self._special_mode_view()
         elif self.session is not None and self.session.phase not in {
@@ -215,10 +210,6 @@ class MathAdventureApp:
         # Build the complete replacement before clearing the current page. If
         # constructing a view fails, the last usable menu remains visible.
         self.page.clean()
-        # Some views need non-visual controls such as FilePicker in the page
-        # overlay. Attach them only after clean(): adding them while the old
-        # page is still mounted would make clean() immediately detach them.
-        self.page.overlay.extend(self.pending_overlay_controls)
         self.root_container = root_container
         self.page.add(root_container)
         self.page.update()
@@ -480,25 +471,6 @@ class MathAdventureApp:
 
     def _players_view(self) -> ft.Column:
         name = ft.TextField(label="Name des Kindes")
-        image = ft.TextField(label="Profilbild (optional)", read_only=True, expand=True)
-
-        def selected(event: ft.FilePickerResultEvent) -> None:
-            if not event.files or not event.files[0].path:
-                return
-            source = event.files[0].path
-            target_dir = AppDatabase().path.parent / "profile_images"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            suffix = Path(source).suffix.lower() or ".img"
-            target = target_dir / f"profile-{time.time_ns()}{suffix}"
-            shutil.copy2(source, target)
-            image.value = str(target)
-            image.update()
-
-        picker = ft.FilePicker(on_result=selected)
-        # render() must first clean the previous page and only then attach this
-        # non-visual control. Otherwise Flet removes the freshly created picker
-        # during the same navigation event and can abort the player view update.
-        self.pending_overlay_controls.append(picker)
         icon = ft.Dropdown(
             label="Spielericon",
             value="🙂",
@@ -526,30 +498,18 @@ class MathAdventureApp:
                 )
             ],
         )
-        controls: list[ft.Control] = [
-            name,
-            icon,
-            ft.Row(
-                wrap=True,
-                controls=[
-                    image,
-                    ft.OutlinedButton(
-                        "Bild auswählen",
-                        height=48,
-                        on_click=lambda _: picker.pick_files(
-                            allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE
-                        ),
-                    ),
-                ],
-            ),
-        ]
+        # FilePicker was deliberately removed from this navigation-critical
+        # view. In Flet 0.28 it can detach its overlay service while page.clean()
+        # replaces the menu, leaving both web and Android clients blank. Icons
+        # remain a portable profile choice; existing profile images still load.
+        controls: list[ft.Control] = [name, icon]
         if self.player_error:
             controls.append(ft.Text(self.player_error, color=ERROR))
 
         def create(_: object) -> None:
             try:
                 self.active_player = self.players.add(
-                    name.value or "", image.value or None, icon.value or "🙂"
+                    name.value or "", None, icon.value or "🙂"
                 )
                 self.player_error = ""
                 self._navigate("menu")
