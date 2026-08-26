@@ -217,3 +217,97 @@ def test_linear_computer_rival_has_regular_event_intervals() -> None:
     intervals = [round(right - left, 6) for left, right in zip([0.0, *times], times, strict=False)]
 
     assert len(set(intervals)) == 1
+
+
+def test_timeout_event_and_penalized_score_survive_without_rewriting_counters(
+    tmp_path: Path,
+) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    events = (
+        ScoreEvent(
+            1.0,
+            True,
+            1,
+            task_number=1,
+            event_kind="correct_answer",
+            task_completed=True,
+            correct_answers=1,
+            completed_tasks=1,
+            combo=1,
+        ),
+        ScoreEvent(
+            6.0,
+            False,
+            -2,
+            task_number=2,
+            event_kind="timeout",
+            task_completed=True,
+            correct_answers=1,
+            completed_tasks=2,
+            combo=0,
+        ),
+    )
+    repository.add(
+        RoundStatistic(
+            player.id,
+            "timer",
+            "Aufgaben-Timer",
+            "sha256:timer",
+            correct=1,
+            total=2,
+            elapsed_seconds=6.0,
+            events=events,
+            score_value=-2,
+        )
+    )
+
+    loaded = repository.load(player.id)[0]
+
+    assert loaded.score == -2
+    assert loaded.events[-1].event_kind == "timeout"
+    assert loaded.events[-1].correct_answers == 1
+    assert loaded.events[-1].completed_tasks == 2
+
+
+def test_race_competitors_reject_incomplete_or_unknown_historical_events(
+    tmp_path: Path,
+) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    race = RaceConfig(RaceKind.TASKS, task_target=2)
+
+    for definition_hash, event in (
+        (
+            "sha256:incomplete",
+            ScoreEvent(1.0, True, 1, event_kind="correct_answer", task_completed=True),
+        ),
+        (
+            "sha256:unknown",
+            ScoreEvent(
+                1.0,
+                True,
+                1,
+                event_kind="legacy_bonus",
+                task_completed=True,
+                correct_answers=1,
+                completed_tasks=1,
+                combo=1,
+            ),
+        ),
+    ):
+        repository.add(
+            RoundStatistic(
+                player.id,
+                "game",
+                "Spiel",
+                definition_hash,
+                1,
+                1,
+                1.0,
+                events=(event,),
+            )
+        )
+        assert repository.race_competitors(definition_hash, race=race) == []
