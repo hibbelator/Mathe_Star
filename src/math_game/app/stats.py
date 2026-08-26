@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from math_game.app.database import AppDatabase
+from math_game.core.race import RaceConfig, RaceEventKind, RaceKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,10 +17,32 @@ class ScoreEvent:
     elapsed_seconds: float
     correct: bool
     points_after: int
+    task_id: str | None = None
+    task_number: int | None = None
+    event_kind: str | None = None
+    task_completed: bool | None = None
+    correct_answers: int | None = None
+    completed_tasks: int | None = None
+    combo: int | None = None
+    end_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.elapsed_seconds < 0:
             raise ValueError("Der Ereigniszeitpunkt darf nicht negativ sein.")
+        if self.task_number is not None and self.task_number <= 0:
+            raise ValueError("Die Aufgabennummer muss positiv sein.")
+        for value in (self.correct_answers, self.completed_tasks, self.combo):
+            if value is not None and value < 0:
+                raise ValueError("Ereigniszähler dürfen nicht negativ sein.")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> ScoreEvent:
+        """Read both the compact historical shape and the complete event shape."""
+
+        return cls(**{name: data[name] for name in cls.__dataclass_fields__ if name in data})  # type: ignore[arg-type]
+
+    def as_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,12 +57,39 @@ class RoundStatistic:
     played_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     events: tuple[ScoreEvent, ...] = ()
     score_value: int | None = None
+    event_schema_version: int = 2
 
     def __post_init__(self) -> None:
         if self.correct < 0 or self.total <= 0 or self.correct > self.total:
             raise ValueError("Ungültiges Rundenergebnis.")
         if self.elapsed_seconds < 0:
             raise ValueError("Die Spielzeit darf nicht negativ sein.")
+        if self.event_schema_version <= 0:
+            raise ValueError("Die Ereignis-Schemaversion muss positiv sein.")
+
+    def events_support(self, race: RaceConfig) -> bool:
+        """Whether the stored facts can replay the selected rule without guesses."""
+
+        if not self.events:
+            return False
+        if self.event_schema_version >= 2:
+            required = all(
+                event.event_kind is not None
+                and event.task_completed is not None
+                and event.correct_answers is not None
+                and event.completed_tasks is not None
+                and event.combo is not None
+                for event in self.events
+            )
+            return required
+        # Version 1 recorded only answer correctness, score and the actual event time.
+        # That is sufficient for answer/perfect/combo races, but not for task races
+        # (one task could have several attempts) or a time-limit finish event.
+        return race.kind in {
+            RaceKind.CORRECT_ANSWERS,
+            RaceKind.PERFECT,
+            RaceKind.COMBO,
+        }
 
     @property
     def accuracy(self) -> float:
@@ -137,7 +187,29 @@ def computer_competitor(
     points = 0
     for event in events:
         points = max(0, points + (1 if event.correct else -1))
-        normalized.append(ScoreEvent(event.elapsed_seconds, event.correct, points))
+        correct_count = sum(item.correct for item in normalized) + int(event.correct)
+        combo = (
+            (normalized[-1].combo or 0) + 1
+            if event.correct and normalized
+            else int(event.correct)
+        )
+        normalized.append(
+            ScoreEvent(
+                event.elapsed_seconds,
+                event.correct,
+                points,
+                task_number=len(normalized) + 1,
+                event_kind=(
+                    RaceEventKind.CORRECT_ANSWER.value
+                    if event.correct
+                    else RaceEventKind.WRONG_ANSWER.value
+                ),
+                task_completed=True,
+                correct_answers=correct_count,
+                completed_tasks=len(normalized) + 1,
+                combo=combo,
+            )
+        )
     correct_count = sum(event.correct for event in normalized)
     statistic = RoundStatistic(
         player_id=0,
@@ -164,7 +236,8 @@ class StatisticsRepository:
 
     def load(self, player_id: int | None = None) -> list[RoundStatistic]:
         query = """SELECT player_id, game_id, game_name, definition_hash, correct, total,
-                   elapsed_seconds, played_at, events_json, score_value FROM round_statistics"""
+                   elapsed_seconds, played_at, events_json, score_value, event_schema_version
+                   FROM round_statistics"""
         parameters: tuple[object, ...] = ()
         if player_id is not None:
             query += " WHERE player_id = ?"
@@ -182,8 +255,11 @@ class StatisticsRepository:
                 total=int(row["total"]),
                 elapsed_seconds=float(row["elapsed_seconds"]),
                 played_at=str(row["played_at"]),
-                events=tuple(ScoreEvent(**event) for event in json.loads(row["events_json"])),
+                events=tuple(
+                    ScoreEvent.from_dict(event) for event in json.loads(row["events_json"])
+                ),
                 score_value=None if row["score_value"] is None else int(row["score_value"]),
+                event_schema_version=int(row["event_schema_version"]),
             )
             for row in rows
         ]
@@ -193,8 +269,8 @@ class StatisticsRepository:
             connection.execute(
                 """INSERT INTO round_statistics(
                     player_id, game_id, game_name, definition_hash, correct, total,
-                    elapsed_seconds, played_at, events_json, score_value)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    elapsed_seconds, played_at, events_json, score_value, event_schema_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     statistic.player_id,
                     statistic.game_id,
@@ -205,16 +281,10 @@ class StatisticsRepository:
                     statistic.elapsed_seconds,
                     statistic.played_at,
                     json.dumps(
-                        [
-                            {
-                                "elapsed_seconds": event.elapsed_seconds,
-                                "correct": event.correct,
-                                "points_after": event.points_after,
-                            }
-                            for event in statistic.events
-                        ]
+                        [event.as_dict() for event in statistic.events]
                     ),
                     statistic.score_value,
+                    statistic.event_schema_version,
                 ),
             )
 
@@ -239,15 +309,27 @@ class StatisticsRepository:
             default=None,
         )
 
-    def race_competitors(self, definition_hash: str, limit: int = 3) -> list[RaceCompetitor]:
-        """Return the strongest recorded event-based runs for an exact game."""
+    def race_competitors(
+        self,
+        definition_hash: str,
+        limit: int | RaceConfig = 3,
+        race: RaceConfig | None = None,
+    ) -> list[RaceCompetitor]:
+        """Return exact-definition runs whose facts support the concrete race rule."""
 
+        # Accept the concrete rule as the second positional argument as well as by
+        # keyword, while retaining the original ``(hash, limit)`` public API.
+        if isinstance(limit, RaceConfig):
+            if race is not None:
+                raise ValueError("Die Rennregel darf nur einmal angegeben werden.")
+            race, limit = limit, 3
         if not 1 <= limit <= 8:
             raise ValueError("Ein Rennen braucht zwischen 1 und 8 Gegnern.")
         with self.database.connect() as connection:
             rows = connection.execute(
                 """SELECT s.player_id, p.name, p.icon, s.game_id, s.game_name, s.correct, s.total,
-                          s.elapsed_seconds, s.played_at, s.events_json, s.score_value
+                          s.elapsed_seconds, s.played_at, s.events_json, s.score_value,
+                          s.event_schema_version
                    FROM round_statistics AS s
                    JOIN players AS p ON p.id = s.player_id
                    WHERE s.definition_hash = ? AND s.events_json != '[]'""",
@@ -266,14 +348,18 @@ class StatisticsRepository:
                     elapsed_seconds=float(row["elapsed_seconds"]),
                     played_at=str(row["played_at"]),
                     events=tuple(
-                        ScoreEvent(**event) for event in json.loads(str(row["events_json"]))
+                        ScoreEvent.from_dict(event)
+                        for event in json.loads(str(row["events_json"]))
                     ),
                     score_value=(None if row["score_value"] is None else int(row["score_value"])),
+                    event_schema_version=int(row["event_schema_version"]),
                 ),
                 player_icon=str(row["icon"]),
             )
             for row in rows
         ]
+        if race is not None:
+            competitors = [item for item in competitors if item.statistic.events_support(race)]
         competitors.sort(
             key=lambda item: (
                 -item.statistic.score,

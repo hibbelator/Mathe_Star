@@ -8,6 +8,7 @@ from math_game.app.stats import (
     StatisticsRepository,
     computer_competitor,
 )
+from math_game.core.race import RaceConfig, RaceKind
 
 
 def test_statistics_persist_and_choose_best_round(tmp_path: Path) -> None:
@@ -105,6 +106,58 @@ def test_live_score_events_and_explicit_score_survive_round_trip(tmp_path: Path)
     assert loaded.events == events
     assert loaded.score == 0
     assert repository.best_round(player.id, "sha256:a") == loaded
+
+
+def test_complete_event_shape_survives_round_trip(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    event = ScoreEvent(
+        2.5,
+        True,
+        3,
+        task_id="task-7",
+        task_number=7,
+        event_kind="correct_answer",
+        task_completed=True,
+        correct_answers=5,
+        completed_tasks=7,
+        combo=2,
+        end_reason="task_target_reached",
+    )
+    repository.add(
+        RoundStatistic(player.id, "game", "Spiel", "sha256:a", 5, 7, 2.5, events=(event,))
+    )
+
+    loaded = repository.load(player.id)[0]
+
+    assert loaded.events == (event,)
+    assert loaded.event_schema_version == 2
+
+
+def test_historical_events_are_filtered_by_concrete_race_rule(tmp_path: Path) -> None:
+    database = AppDatabase(tmp_path / "app.sqlite3")
+    player = PlayerRepository(database).add("Mia")
+    repository = StatisticsRepository(database)
+    repository.add(
+        RoundStatistic(
+            player.id,
+            "game",
+            "Spiel",
+            "sha256:a",
+            1,
+            1,
+            2.0,
+            events=(ScoreEvent(1.0, True, 1),),
+            event_schema_version=1,
+        )
+    )
+
+    answer_race = RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=1)
+    task_race = RaceConfig(RaceKind.TASKS, task_target=1)
+
+    assert len(repository.race_competitors("sha256:a", answer_race)) == 1
+    assert repository.race_competitors("sha256:a", race=task_race) == []
 
 
 def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: Path) -> None:

@@ -70,6 +70,13 @@ class AppDatabase:
             )
         if "score_value" not in columns:
             connection.execute("ALTER TABLE round_statistics ADD COLUMN score_value INTEGER")
+        if "event_schema_version" not in columns:
+            # Existing JSON rows have the compact v1 structure.  Keeping that fact
+            # explicit lets rule-specific replay reject them instead of guessing.
+            connection.execute(
+                "ALTER TABLE round_statistics "
+                "ADD COLUMN event_schema_version INTEGER NOT NULL DEFAULT 1"
+            )
         player_columns = {row["name"] for row in connection.execute("PRAGMA table_info(players)")}
         if "icon" not in player_columns:
             connection.execute("ALTER TABLE players ADD COLUMN icon TEXT NOT NULL DEFAULT '🙂'")
