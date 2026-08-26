@@ -1,10 +1,15 @@
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from math_game.app.flet_app import MathAdventureApp, parse_race_levels
 from math_game.app.session import RoundPhase
-from math_game.core.presets import EXCEL_PRESETS
+from math_game.core.contracts import GameMode
+from math_game.core.presets import EXCEL_PRESETS, DefinedGame
+from math_game.core.race import RaceConfig, RaceKind
 
 
 def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
@@ -15,7 +20,7 @@ def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
     panel.update = lambda: setattr(panel, "update_calls", panel.update_calls + 1)
     dynamic_app.ghost_tick_timer = object()
     dynamic_app.dialog_open = False
-    dynamic_app.race_competitors = [object()]
+    dynamic_app.race_state = object()
     # A visible correct/wrong feedback must not stop the recurring race clock.
     dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=object())
     dynamic_app.race_live_panel = panel
@@ -62,7 +67,7 @@ def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
     dynamic_app.dialog_open = False
     dynamic_app.dialog_paused_at = 0.0
     dynamic_app.round_started_at = 0.0
-    dynamic_app.race_competitors = []
+    dynamic_app.race_state = None
     dynamic_app.session = None
     dynamic_app.special_mode = None
     dynamic_app.special_deadline_timer = None
@@ -84,6 +89,131 @@ def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
 
     assert calls[-2] == ("close", dialog)
     assert calls[-1] == ("start", EXCEL_PRESETS[0])
+
+
+def _race_dialog(game: DefinedGame) -> tuple[Any, Any, list[Any]]:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    page = SimpleNamespace(opened=None, update=lambda: None)
+    def open_dialog(dialog: object) -> None:
+        page.opened = dialog
+
+    def close_dialog(_: object) -> None:
+        return None
+
+    def race_competitors(*_: object) -> list[object]:
+        return []
+
+    def start_game(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    page.open = open_dialog
+    page.close = close_dialog
+    dynamic_app.page = page
+    dynamic_app.active_player = None
+    dynamic_app.dialog_open = False
+    dynamic_app.dialog_paused_at = 0.0
+    dynamic_app.round_started_at = 0.0
+    dynamic_app.race_state = None
+    dynamic_app.session = None
+    dynamic_app.special_mode = None
+    dynamic_app.special_deadline_timer = None
+    dynamic_app._cancel_ghost_tick = lambda: None
+    dynamic_app._cancel_auto_advance = lambda: None
+    dynamic_app.statistics = SimpleNamespace(race_competitors=race_competitors)
+    dynamic_app._start_game = start_game
+
+    dynamic_app._configure_race(game)
+    dialog = page.opened
+    return dynamic_app, dialog, dialog.content.content.controls
+
+
+@pytest.mark.parametrize(
+    ("game", "explanation", "editable_target"),
+    [
+        (
+            replace(EXCEL_PRESETS[0], mode=GameMode.TASK_SPRINT, task_count=17),
+            "Ziellinie nach 17 Aufgaben",
+            False,
+        ),
+        (
+            replace(EXCEL_PRESETS[0], mode=GameMode.TIME_ATTACK, duration_seconds=90),
+            "Gemeinsames Rennende nach 90 Sekunden",
+            False,
+        ),
+        (
+            replace(EXCEL_PRESETS[0], mode=GameMode.TARGET_HUNT, correct_target=12),
+            "Ziellinie nach 12 richtigen Antworten",
+            True,
+        ),
+        (
+            replace(EXCEL_PRESETS[0], mode=GameMode.PERFECT_RUN, correct_target=20),
+            "Dein Lauf endet beim ersten endgültigen Fehler",
+            False,
+        ),
+        (
+            replace(
+                EXCEL_PRESETS[0],
+                mode=GameMode.PER_TASK_TIMER,
+                task_count=14,
+                per_task_seconds=8,
+            ),
+            "Deadline pro Aufgabe: 8 Sekunden · äußere Rennbegrenzung: 14 Aufgaben",
+            False,
+        ),
+    ],
+)
+def test_race_dialog_explains_each_supported_mode_and_only_edits_target_hunt(
+    game: DefinedGame, explanation: str, editable_target: bool
+) -> None:
+    _, dialog, controls = _race_dialog(game)
+
+    assert explanation in [getattr(control, "value", None) for control in controls]
+    target_fields = [
+        control
+        for control in controls
+        if getattr(control, "label", None) == "Richtige Antworten bis zur Ziellinie"
+    ]
+    assert bool(target_fields) is editable_target
+    assert dialog.actions[1].disabled is False
+
+
+def test_target_hunt_validates_its_explicit_race_variant() -> None:
+    game = replace(EXCEL_PRESETS[0], mode=GameMode.TARGET_HUNT, correct_target=12)
+    _, dialog, controls = _race_dialog(game)
+    target = next(
+        control
+        for control in controls
+        if getattr(control, "label", None) == "Richtige Antworten bis zur Ziellinie"
+    )
+    error = controls[-1]
+
+    target.value = "0"
+    dialog.actions[1].on_click(None)
+
+    assert error.value == "Das Rennziel muss mindestens 1 richtige Antwort sein."
+
+
+def test_non_race_mode_names_reason_and_disables_start() -> None:
+    game = replace(EXCEL_PRESETS[0], mode=GameMode.PRACTICE)
+    _, dialog, controls = _race_dialog(game)
+
+    explanations = [getattr(control, "value", None) for control in controls]
+    assert "Der Modus practice unterstützt keine Rennen." in explanations
+    assert dialog.actions[1].disabled is True
+
+
+def test_changed_target_hunt_limit_gets_a_distinct_comparison_hash() -> None:
+    game = replace(EXCEL_PRESETS[0], mode=GameMode.TARGET_HUNT, correct_target=12)
+    original = RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=12)
+    variant = RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=25)
+
+    dynamic_app: Any = MathAdventureApp
+    original_hash = dynamic_app._race_comparison_hash(game, original)
+    variant_hash = dynamic_app._race_comparison_hash(game, variant)
+
+    assert original_hash != game.definition_hash()
+    assert variant_hash != original_hash
 
 
 def test_next_task_updates_existing_controls_without_full_render() -> None:
