@@ -638,16 +638,16 @@ class MathAdventureApp:
             on_change=self._sanitize_answer,
             on_submit=self._on_submit_clicked,
         )
-        controls.append(self.answer_field)
-        self.task_feedback = ft.Container(visible=False)
-        controls.append(self.task_feedback)
+        task_feedback = ft.Container(visible=False)
+        self.task_feedback = task_feedback
+        controls.append(task_feedback)
         if feedback:
             if feedback.is_correct:
-                self.task_feedback.content = ft.Text(
+                task_feedback.content = ft.Text(
                     "✓ Richtig! Super gelöst.", size=18, color=SUCCESS, weight=ft.FontWeight.BOLD
                 )
-                self.task_feedback.bgcolor = "#E6F4EA"
-                self.task_feedback.visible = True
+                task_feedback.bgcolor = "#E6F4EA"
+                task_feedback.visible = True
                 self._schedule_auto_advance(0.8)
             elif not feedback.is_task_complete:
                 controls.append(
