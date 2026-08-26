@@ -36,3 +36,23 @@ Der Subtraktionsgenerator zieht bei erlaubten negativen Ergebnissen ebenfalls un
 ## Plugin-Isolation
 
 Plugins dürfen später Generatoren, Modi oder Integrationen bereitstellen. Sie müssen jedoch gegen die Core-Verträge arbeiten. Ein Plugin darf die Bedeutung eines Antwortstatus oder eines Definitions-Hashes nicht verändern. Dadurch bleibt die Vergleichbarkeit über verschiedene Erweiterungen hinweg erhalten.
+
+## Statistikereignisse und historische Renngegner
+
+Neue Statistikereignisse speichern neben Rennzeit, Antwortstatus und Punktestand auch die
+Aufgabenkennung beziehungsweise Aufgabennummer, Ereignisart, den endgültigen
+Aufgabenabschluss sowie die kumulierten Werte für richtige Antworten, abgeschlossene
+Aufgaben und Combo. Eine optionale Endursache kann den Abschluss eines Laufs erklären.
+Diese Fakten sind absichtlich redundant: Ein Renn-Replay muss weder Aufgabenabschlüsse
+noch Zielzeitpunkte aus einem Score erraten.
+
+Die Datenbankmigration bewahrt ältere Statistiken unverändert und kennzeichnet deren
+kompakte Ereignisstruktur als Version 1. Solche Läufe können weiterhin in Bestenlisten und
+Auswertungen erscheinen. Als Renngegner sind sie nur für Regeln verwendbar, die sich aus
+den tatsächlich gespeicherten Antwortfolgen ableiten lassen: Rennen auf richtige Antworten,
+fehlerfreie Läufe und Combo-Rennen. Für Rennen nach abgeschlossenen Aufgaben fehlen die
+Informationen über Mehrfachversuche; für Zeitlimit-Rennen fehlt ein ausdrückliches
+Zeitablauf-/Endereignis. Diese alten Läufe werden daher für diese konkreten Regeln nicht als
+Gegner angeboten. Ereignisse der Version 2 werden nur verwendet, wenn alle für das Replay
+benötigten kumulierten Zähler und Abschlussangaben vorhanden sind. Der Definitions-Hash
+bleibt in jedem Fall die erste Vergleichbarkeitsgrenze.

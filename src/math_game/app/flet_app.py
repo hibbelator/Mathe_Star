@@ -24,6 +24,7 @@ from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
 from math_game.core.presets import DefinedGame, GameRepository, OperationWeights
+from math_game.core.race import RaceEventKind, race_config_for_game
 from math_game.core.task import ArithmeticTask
 from math_game.generators import DefinedGameTaskGenerator
 from math_game.generators.random_source import PythonRandomSource
@@ -1153,7 +1154,10 @@ class MathAdventureApp:
 
     def _configure_race(self, game: DefinedGame) -> None:
         self._pause_for_dialog()
-        recorded = self.statistics.race_competitors(game.definition_hash(), 8)
+        availability = race_config_for_game(game)
+        recorded = self.statistics.race_competitors(
+            game.definition_hash(), 8, availability.config if availability.available else None
+        )
         own_summary = (
             self.statistics.summary(self.active_player.id, game.definition_hash())
             if self.active_player
@@ -1669,11 +1673,41 @@ class MathAdventureApp:
             return
         previous = self.live_score_events[-1].points_after if self.live_score_events else 0
         points = previous + (1 if correct else game.wrong_answer_penalty)
+        session = self.session
+        previous_correct = (
+            self.live_score_events[-1].correct_answers or 0 if self.live_score_events else 0
+        )
+        previous_completed = (
+            self.live_score_events[-1].completed_tasks or 0 if self.live_score_events else 0
+        )
+        previous_combo = self.live_score_events[-1].combo or 0 if self.live_score_events else 0
+        task_completed = bool(session and session.feedback and session.feedback.is_task_complete)
+        completed_tasks = previous_completed + int(task_completed)
+        end_reason = (
+            session.end_reason.value
+            if session is not None and session.end_reason is not None
+            else None
+        )
         self.live_score_events.append(
             ScoreEvent(
                 elapsed_seconds=max(0.0, time.monotonic() - self.round_started_at),
                 correct=correct,
                 points_after=points,
+                task_number=(
+                    session.task_number
+                    if session is not None
+                    else len(self.live_score_events) + 1
+                ),
+                event_kind=(
+                    RaceEventKind.CORRECT_ANSWER.value
+                    if correct
+                    else RaceEventKind.WRONG_ANSWER.value
+                ),
+                task_completed=task_completed,
+                correct_answers=previous_correct + int(correct),
+                completed_tasks=completed_tasks,
+                combo=previous_combo + 1 if correct else 0,
+                end_reason=end_reason,
             )
         )
         if self.race_competitors and not self.dialog_open:
