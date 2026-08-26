@@ -477,6 +477,31 @@ def test_next_task_updates_existing_controls_without_full_render() -> None:
     assert dynamic_app.task_action.text == "Antwort prüfen"
 
 
+def test_task_view_mounts_answer_field_before_render_focuses_it() -> None:
+    """The answer field must belong to the page when render calls focus()."""
+
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.page = SimpleNamespace(width=390)
+    dynamic_app.session = SimpleNamespace(
+        current_task=SimpleNamespace(prompt="8 + 7"),
+        task_number=1,
+        task_count=10,
+        correct_count=0,
+        results=[],
+        progress=0.0,
+        feedback=None,
+    )
+    dynamic_app.active_game = EXCEL_PRESETS[0]
+    dynamic_app.live_score_events = []
+    dynamic_app.round_started_at = time.monotonic()
+    dynamic_app.race_state = None
+
+    view = dynamic_app._task_view()
+
+    assert dynamic_app.answer_field in view.controls
+
+
 def test_recording_end_is_not_presented_as_finish_line() -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app

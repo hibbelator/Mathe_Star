@@ -638,6 +638,11 @@ class MathAdventureApp:
             on_change=self._sanitize_answer,
             on_submit=self._on_submit_clicked,
         )
+        # Keep the field in the control tree before render() tries to focus it.
+        # Flet rejects updates (including focus) for detached controls, which
+        # otherwise aborts the click handler and leaves web and Android clients
+        # on the empty page produced by page.clean().
+        controls.append(self.answer_field)
         task_feedback = ft.Container(visible=False)
         self.task_feedback = task_feedback
         controls.append(task_feedback)
