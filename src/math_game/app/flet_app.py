@@ -1576,6 +1576,9 @@ class MathAdventureApp:
             self.page.update()
             return
         self._append_score_event(feedback.is_correct)
+        if self._active_session().phase is RoundPhase.FINISHED:
+            self.render()
+            return
         if not feedback.is_correct and not feedback.is_task_complete:
             self.answer_field.value = ""
         self._update_task_controls()
