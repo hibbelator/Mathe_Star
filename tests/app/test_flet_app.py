@@ -477,6 +477,70 @@ def test_next_task_updates_existing_controls_without_full_render() -> None:
     assert dynamic_app.task_action.text == "Antwort prüfen"
 
 
+def test_task_view_mounts_answer_field_before_render_focuses_it() -> None:
+    """The answer field must belong to the page when render calls focus()."""
+
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.page = SimpleNamespace(width=390)
+    dynamic_app.session = SimpleNamespace(
+        current_task=SimpleNamespace(prompt="8 + 7"),
+        task_number=1,
+        task_count=10,
+        correct_count=0,
+        results=[],
+        progress=0.0,
+        feedback=None,
+    )
+    dynamic_app.active_game = EXCEL_PRESETS[0]
+    dynamic_app.live_score_events = []
+    dynamic_app.round_started_at = time.monotonic()
+    dynamic_app.race_state = None
+
+    view = dynamic_app._task_view()
+
+    assert dynamic_app.answer_field in view.controls
+
+
+def test_resize_updates_mounted_shell_without_full_render() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    updates: list[str] = []
+    dynamic_app.page = SimpleNamespace(width=360)
+    dynamic_app.root_container = SimpleNamespace(
+        width=760,
+        padding=32,
+        border_radius=28,
+        update=lambda: updates.append("updated"),
+    )
+    dynamic_app.render = lambda: (_ for _ in ()).throw(AssertionError("full render"))
+
+    dynamic_app._on_resize(None)
+
+    metrics = layout_metrics(360)
+    assert dynamic_app.root_container.width == metrics.content_width
+    assert dynamic_app.root_container.padding == metrics.padding
+    assert dynamic_app.root_container.border_radius == 18
+    assert updates == ["updated"]
+
+
+def test_players_view_avoids_file_picker_overlay_during_navigation() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+
+    def no_players() -> list[object]:
+        return []
+
+    dynamic_app.page = SimpleNamespace(width=390, overlay=[])
+    dynamic_app.player_error = ""
+    dynamic_app.players = SimpleNamespace(all=no_players)
+
+    view = dynamic_app._players_view()
+
+    assert dynamic_app.page.overlay == []
+    assert all(type(control).__name__ != "FilePicker" for control in view.controls)
+
+
 def test_recording_end_is_not_presented_as_finish_line() -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
@@ -554,7 +618,9 @@ def test_finished_render_cancels_ghost_task_and_auto_advance_timer() -> None:
     def add_control(_: object) -> None:
         return None
 
-    dynamic_app.page = SimpleNamespace(clean=lambda: None, add=add_control, update=lambda: None)
+    dynamic_app.page = SimpleNamespace(
+        clean=lambda: None, add=add_control, update=lambda: None, overlay=[]
+    )
     dynamic_app._finished_view = lambda: SimpleNamespace()
 
     dynamic_app.render()
