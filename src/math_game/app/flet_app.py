@@ -147,6 +147,8 @@ class MathAdventureApp:
         self.task_prompt: ft.Text | None = None
         self.task_feedback: ft.Container | None = None
         self.task_action: ft.ElevatedButton | None = None
+        self.root_container: ft.Container | None = None
+        self.pending_overlay_controls: list[ft.Control] = []
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -181,7 +183,7 @@ class MathAdventureApp:
         # recurring race callback first; a live task schedules exactly one new
         # callback below, while a finished round deliberately schedules none.
         self._cancel_ghost_tick()
-        self.page.clean()
+        self.pending_overlay_controls = []
         if self.special_mode is not None:
             content = self._special_mode_view()
         elif self.session is not None and self.session.phase not in {
@@ -203,15 +205,22 @@ class MathAdventureApp:
         else:
             content = self._main_menu_view()
         metrics = layout_metrics(getattr(self.page, "width", None))
-        self.page.add(
-            ft.Container(
-                width=metrics.content_width,
-                padding=metrics.padding,
-                bgcolor=CARD,
-                border_radius=18 if metrics.compact else 28,
-                content=content,
-            )
+        root_container = ft.Container(
+            width=metrics.content_width,
+            padding=metrics.padding,
+            bgcolor=CARD,
+            border_radius=18 if metrics.compact else 28,
+            content=content,
         )
+        # Build the complete replacement before clearing the current page. If
+        # constructing a view fails, the last usable menu remains visible.
+        self.page.clean()
+        # Some views need non-visual controls such as FilePicker in the page
+        # overlay. Attach them only after clean(): adding them while the old
+        # page is still mounted would make clean() immediately detach them.
+        self.page.overlay.extend(self.pending_overlay_controls)
+        self.root_container = root_container
+        self.page.add(root_container)
         self.page.update()
         if (
             self.answer_field is not None
@@ -486,7 +495,10 @@ class MathAdventureApp:
             image.update()
 
         picker = ft.FilePicker(on_result=selected)
-        self.page.overlay.append(picker)
+        # render() must first clean the previous page and only then attach this
+        # non-visual control. Otherwise Flet removes the freshly created picker
+        # during the same navigation event and can abort the player view update.
+        self.pending_overlay_controls.append(picker)
         icon = ft.Dropdown(
             label="Spielericon",
             value="🙂",
@@ -638,6 +650,11 @@ class MathAdventureApp:
             on_change=self._sanitize_answer,
             on_submit=self._on_submit_clicked,
         )
+        # Keep the field in the control tree before render() tries to focus it.
+        # Flet rejects updates (including focus) for detached controls, which
+        # otherwise aborts the click handler and leaves web and Android clients
+        # on the empty page produced by page.clean().
+        controls.append(self.answer_field)
         task_feedback = ft.Container(visible=False)
         self.task_feedback = task_feedback
         controls.append(task_feedback)
@@ -2140,9 +2157,22 @@ class MathAdventureApp:
             self.answer_field.update()
 
     def _on_resize(self, _: object) -> None:
-        """Rebuild controls at phone/tablet/desktop breakpoint changes."""
+        """Resize the mounted card without rebuilding the complete page.
 
-        self.render()
+        Browser scrollbars and Android system UI can emit resize events while a
+        menu click is already replacing the view. A second full ``render()`` in
+        that situation used to clear the new view again and could leave the
+        client white. Updating the responsive shell in place avoids that race.
+        """
+
+        root_container = self.root_container
+        if root_container is None:
+            return
+        metrics = layout_metrics(getattr(self.page, "width", None))
+        root_container.width = metrics.content_width
+        root_container.padding = metrics.padding
+        root_container.border_radius = 18 if metrics.compact else 28
+        root_container.update()
 
     def _on_lifecycle_change(self, event: object) -> None:
         """Pause all wall-clock UI work while Android is in the background."""
