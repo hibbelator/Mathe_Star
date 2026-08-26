@@ -65,4 +65,7 @@ class EndReason(StrEnum):
     TIME_LIMIT_REACHED = "time_limit_reached"
     FIRST_ERROR = "first_error"
     TARGET_REACHED = "target_reached"
+    TASK_TARGET_REACHED = "task_target_reached"
+    CORRECT_TARGET_REACHED = "correct_target_reached"
+    COMBO_TARGET_REACHED = "combo_target_reached"
     ABORTED = "aborted"
