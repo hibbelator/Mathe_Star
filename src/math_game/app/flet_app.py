@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 
 import flet as ft
 
@@ -24,7 +25,7 @@ from math_game.core.contracts import ArithmeticOperation, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
 from math_game.core.presets import DefinedGame, GameRepository, OperationWeights
-from math_game.core.race import RaceEventKind, race_config_for_game
+from math_game.core.race import RaceConfig, RaceEventKind, RaceKind, race_config_for_game
 from math_game.core.task import ArithmeticTask
 from math_game.generators import DefinedGameTaskGenerator
 from math_game.generators.random_source import PythonRandomSource
@@ -36,6 +37,16 @@ from math_game.modes.warm_up import WarmUpPhase
 
 BACKGROUND, INK, PRIMARY, SUCCESS = "#F4F7FF", "#17223B", "#536DFE", "#168F68"
 WARNING, ERROR, CARD, MUTED = "#E67E22", "#C2415B", "#FFFFFF", "#52607A"
+
+
+@dataclass(frozen=True, slots=True)
+class RaceController:
+    """All UI state belonging to one concretely configured race."""
+
+    config: RaceConfig
+    competitors: tuple[RaceCompetitor, ...]
+    vehicle: str
+    comparison_hash: str
 
 
 def parse_race_levels(raw_value: str) -> list[int]:
@@ -94,9 +105,7 @@ class MathAdventureApp:
         self.player_error = ""
         self.editor_seed: dict[str, str] | None = None
         self.live_score_events: list[ScoreEvent] = []
-        self.race_competitors: list[RaceCompetitor] = []
-        self.race_target_points = 0
-        self.race_vehicle = "🚀"
+        self.race_state: RaceController | None = None
         self.special_mode: AccuracyMode | BlitzMode | PluMiEndlessMode | WarmUpMode | None = None
         self.special_generator: DefinedGameTaskGenerator | None = None
         self.special_task: ArithmeticTask | None = None
@@ -146,7 +155,7 @@ class MathAdventureApp:
             self.answer_field.focus()
         if (
             not self.dialog_open
-            and self.race_competitors
+            and self.race_state is not None
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.session.feedback is None
@@ -587,7 +596,7 @@ class MathAdventureApp:
         self.special_mode = controller
         self.special_feedback = ""
         self.round_started_at, self.statistic_saved = time.monotonic(), False
-        self.live_score_events, self.race_competitors = [], []
+        self.live_score_events, self.race_state = [], None
         self._next_special_task()
         self.render()
         if isinstance(controller, BlitzMode | WarmUpMode):
@@ -758,7 +767,7 @@ class MathAdventureApp:
         )
 
     def _race_controls(self) -> list[ft.Control]:
-        if not self.race_competitors:
+        if self.race_state is None:
             self.race_live_panel = None
             return []
         self.race_live_panel = self._build_race_panel()
@@ -767,12 +776,15 @@ class MathAdventureApp:
     def _build_race_panel(self) -> ft.Container:
         """Build only the moving race area, independently of the answer form."""
 
+        if self.race_state is None:
+            raise RuntimeError("race panel requires a configured race")
+        race = self.race_state.config
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
         own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
         own_name = self.active_player.name if self.active_player else "Du"
         own_icon = self.active_player.icon if self.active_player else "🙂"
         racers: list[tuple[str, str, str, int, str]] = [
-            (own_name, own_icon, self.race_vehicle, own_points, "Dein aktueller Lauf")
+            (own_name, own_icon, self.race_state.vehicle, own_points, "Dein aktueller Lauf")
         ]
         opponent_vehicles = (
             "🏎️",
@@ -792,7 +804,7 @@ class MathAdventureApp:
             "🦅",
             "🐬",
         )
-        for index, competitor in enumerate(self.race_competitors):
+        for index, competitor in enumerate(self.race_state.competitors):
             events = competitor.statistic.events
             past = [event for event in events if event.elapsed_seconds <= elapsed]
             points = past[-1].points_after if past else 0
@@ -843,7 +855,7 @@ class MathAdventureApp:
                             ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
                             ft.Text(
                                 f"Platz {own_rank}/{len(racers)} · "
-                                f"Ziel {self.race_target_points} P",
+                                f"{self._race_summary(race)}",
                                 color=PRIMARY,
                                 weight=ft.FontWeight.BOLD,
                             ),
@@ -864,7 +876,9 @@ class MathAdventureApp:
         detail: str,
         is_player: bool,
     ) -> ft.Control:
-        target = max(1, self.race_target_points)
+        if self.race_state is None:
+            raise RuntimeError("race track requires a configured race")
+        target = max(1.0, self._race_progress_target(self.race_state.config))
         progress = min(1.0, max(0.0, points / target))
         track_width = 470
         vehicle_left = round(progress * (track_width - 35))
@@ -921,14 +935,21 @@ class MathAdventureApp:
                     color=MUTED,
                 ),
                 *self._race_controls(),
-                *self._dashboard_controls(game.definition_hash(), highlight_latest=True),
+                *self._dashboard_controls(
+                    self.race_state.comparison_hash
+                    if self.race_state is not None
+                    else game.definition_hash(),
+                    highlight_latest=True,
+                ),
                 self._action_button(
-                    "Rennen noch einmal" if self.race_competitors else "Noch einmal spielen",
+                    "Rennen noch einmal" if self.race_state else "Noch einmal spielen",
                     lambda _: self._start_game(
                         game,
-                        competitors=list(self.race_competitors),
-                        target_points=self.race_target_points,
-                        race_vehicle=self.race_vehicle,
+                        race_config=self.race_state.config if self.race_state else None,
+                        competitors=(
+                            list(self.race_state.competitors) if self.race_state else None
+                        ),
+                        race_vehicle=self.race_state.vehicle if self.race_state else "🚀",
                     ),
                 ),
                 ft.TextButton("Zur Spieleauswahl", on_click=lambda _: self._choose_another()),
@@ -1152,20 +1173,69 @@ class MathAdventureApp:
             copy_to_editor,
         )
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = float(seconds)
+        if seconds >= 60 and seconds % 60 == 0:
+            minutes = int(seconds // 60)
+            return f"{minutes} Minute" if minutes == 1 else f"{minutes} Minuten"
+        value = int(seconds) if seconds.is_integer() else seconds
+        return f"{value} Sekunde" if seconds == 1 else f"{value} Sekunden"
+
+    @classmethod
+    def _race_summary(cls, config: RaceConfig) -> str:
+        if config.kind is RaceKind.TASKS:
+            if config.task_timeout_seconds is not None:
+                return (
+                    f"Deadline pro Aufgabe: {cls._format_duration(config.task_timeout_seconds)} · "
+                    f"äußere Rennbegrenzung: {config.task_target} Aufgaben"
+                )
+            return f"Ziellinie nach {config.task_target} Aufgaben"
+        if config.kind is RaceKind.TIME_LIMIT:
+            assert config.duration_seconds is not None
+            return f"Gemeinsames Rennende nach {cls._format_duration(config.duration_seconds)}"
+        if config.kind is RaceKind.CORRECT_ANSWERS:
+            return f"Ziellinie nach {config.correct_target} richtigen Antworten"
+        if config.kind is RaceKind.PERFECT:
+            return "Dein Lauf endet beim ersten endgültigen Fehler"
+        return f"Ziellinie nach {config.combo_target} richtigen Antworten in Folge"
+
+    @staticmethod
+    def _race_progress_target(config: RaceConfig) -> float:
+        return float(
+            config.task_target
+            or config.correct_target
+            or config.duration_seconds
+            or config.combo_target
+            or 1
+        )
+
+    @staticmethod
+    def _race_comparison_hash(game: DefinedGame, config: RaceConfig) -> str:
+        """Keep runs with changed race limits out of the original history bucket."""
+
+        return DefinitionHash.from_payload(
+            {"game": game.definition_hash(), "race": asdict(config)}
+        ).as_uri()
+
     def _configure_race(self, game: DefinedGame) -> None:
         self._pause_for_dialog()
         availability = race_config_for_game(game)
+        initial_config = availability.config
+        comparison_hash = (
+            self._race_comparison_hash(game, initial_config) if initial_config is not None else ""
+        )
         recorded = self.statistics.race_competitors(
-            game.definition_hash(), 8, availability.config if availability.available else None
+            comparison_hash, 8, initial_config
         )
         own_summary = (
-            self.statistics.summary(self.active_player.id, game.definition_hash())
-            if self.active_player
+            self.statistics.summary(self.active_player.id, comparison_hash)
+            if self.active_player and initial_config is not None
             else None
         )
         personal_best = (
-            self.statistics.best_round(self.active_player.id, game.definition_hash())
-            if self.active_player
+            self.statistics.best_round(self.active_player.id, comparison_hash)
+            if self.active_player and initial_config is not None
             else None
         )
         if personal_best is not None and not personal_best.events:
@@ -1206,10 +1276,22 @@ class MathAdventureApp:
             value=False,
             disabled=personal_best is None,
         )
-        target = ft.TextField(
-            label="Festes Ergebnisziel",
-            value=str(game.correct_target or min(game.task_count or 20, 40)),
-            keyboard_type=ft.KeyboardType.NUMBER,
+        target = (
+            ft.TextField(
+                label="Richtige Antworten bis zur Ziellinie",
+                value=str(initial_config.correct_target),
+                helper_text="Nur bei der Zieljagd darf diese Rennvariante angepasst werden.",
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+            if initial_config is not None and initial_config.kind is RaceKind.CORRECT_ANSWERS
+            else None
+        )
+        mode_explanation = ft.Text(
+            self._race_summary(initial_config)
+            if initial_config is not None
+            else availability.reason or "Dieser Modus ist nicht rennfähig.",
+            color=PRIMARY if initial_config is not None else ERROR,
+            weight=ft.FontWeight.BOLD,
         )
         vehicle = ft.Dropdown(
             label="Dein Rennfahrzeug",
@@ -1265,7 +1347,8 @@ class MathAdventureApp:
                         opponent_count,
                         include_personal_best,
                         variable,
-                        target,
+                        mode_explanation,
+                        *([target] if target is not None else []),
                         vehicle,
                         error_text,
                     ],
@@ -1284,17 +1367,26 @@ class MathAdventureApp:
         def start(_: object) -> None:
             try:
                 count = int(opponent_count.value or "3")
-                target_points = int(target.value or "0")
-                if target_points <= 0:
-                    raise ValueError("Das Rennziel muss mindestens 1 Punkt sein.")
+                if initial_config is None:
+                    raise ValueError(availability.reason or "Diese Rennart ist nicht verfügbar.")
+                race_config = initial_config
+                if target is not None:
+                    correct_target = int(target.value or "0")
+                    if correct_target <= 0:
+                        raise ValueError("Das Rennziel muss mindestens 1 richtige Antwort sein.")
+                    race_config = RaceConfig(
+                        RaceKind.CORRECT_ANSWERS,
+                        correct_target=correct_target,
+                        wrong_answer_penalty=initial_config.wrong_answer_penalty,
+                        task_timeout_seconds=initial_config.task_timeout_seconds,
+                    )
+                selected_hash = self._race_comparison_hash(game, race_config)
                 selected_source = source.value or "computer_static"
                 if selected_source == "recorded":
-                    competitors = recorded[:count]
+                    competitors = self.statistics.race_competitors(
+                        selected_hash, count, race_config
+                    )
                 else:
-                    if availability.config is None:
-                        raise ValueError(
-                            availability.reason or "Diese Rennart ist nicht verfügbar."
-                        )
                     selected_levels = parse_race_levels(levels.value or "")
                     if selected_source == "computer_history" and own_summary is None:
                         raise ValueError("Für diesen Gegner fehlt noch eine eigene Runde.")
@@ -1305,11 +1397,11 @@ class MathAdventureApp:
                     )
                     competitors = [
                         computer_competitor(
-                            game.definition_hash(),
-                            availability.config,
+                            selected_hash,
+                            race_config,
                             level=computer_level,
                             baseline_points=baseline,
-                            seed=index + target_points,
+                            seed=index + int(self._race_progress_target(race_config)),
                             variable=bool(variable.value),
                         )
                         for index, computer_level in enumerate(selected_levels)
@@ -1337,8 +1429,8 @@ class MathAdventureApp:
             def begin_race() -> None:
                 self._start_game(
                     game,
+                    race_config=race_config,
                     competitors=competitors,
-                    target_points=target_points,
                     race_vehicle=vehicle.value or "🚀",
                 )
 
@@ -1348,7 +1440,9 @@ class MathAdventureApp:
 
         dialog.actions = [
             ft.TextButton("Abbrechen", on_click=close),
-            ft.ElevatedButton("Rennen starten", on_click=start),
+            ft.ElevatedButton(
+                "Rennen starten", on_click=start, disabled=not availability.available
+            ),
         ]
         self.page.open(dialog)
 
@@ -1356,8 +1450,8 @@ class MathAdventureApp:
         self,
         game: DefinedGame | None,
         *,
+        race_config: RaceConfig | None = None,
         competitors: list[RaceCompetitor] | None = None,
-        target_points: int = 0,
         race_vehicle: str = "🚀",
     ) -> None:
         if game is None:
@@ -1374,7 +1468,12 @@ class MathAdventureApp:
             left=OperandRange(game.factor_min, game.max_result),
             right=OperandRange(game.factor_min, game.max_result),
         )
-        count = game.task_count or game.correct_target or 20
+        count = (
+            race_config.correct_target
+            if race_config is not None and race_config.kind is RaceKind.CORRECT_ANSWERS
+            else game.task_count or game.correct_target or 20
+        )
+        assert count is not None
         self.session = RoundSession(
             generator=DefinedGameTaskGenerator(PythonRandomSource(), game),
             definition=definition,
@@ -1387,9 +1486,16 @@ class MathAdventureApp:
             False,
         )
         self.live_score_events = []
-        self.race_competitors = list(competitors or [])
-        self.race_target_points = target_points
-        self.race_vehicle = race_vehicle
+        self.race_state = (
+            RaceController(
+                race_config,
+                tuple(competitors or ()),
+                race_vehicle,
+                self._race_comparison_hash(game, race_config),
+            )
+            if race_config is not None
+            else None
+        )
         self.session.start()
         self.render()
 
@@ -1402,7 +1508,11 @@ class MathAdventureApp:
                 self.active_player.id,
                 self.active_game.identifier,
                 self.active_game.name,
-                self.active_game.definition_hash(),
+                (
+                    self.race_state.comparison_hash
+                    if self.race_state is not None
+                    else self.active_game.definition_hash()
+                ),
                 session.correct_count,
                 session.task_count,
                 time.monotonic() - self.round_started_at,
@@ -1473,9 +1583,7 @@ class MathAdventureApp:
         if game is None:
             return
         mode = self.special_mode
-        competitors = list(self.race_competitors)
-        target_points = self.race_target_points
-        race_vehicle = self.race_vehicle
+        race_state = self.race_state
 
         def restart() -> None:
             if isinstance(mode, BlitzMode):
@@ -1489,9 +1597,9 @@ class MathAdventureApp:
             else:
                 self._start_game(
                     game,
-                    competitors=competitors,
-                    target_points=target_points,
-                    race_vehicle=race_vehicle,
+                    race_config=race_state.config if race_state else None,
+                    competitors=list(race_state.competitors) if race_state else None,
+                    race_vehicle=race_state.vehicle if race_state else "🚀",
                 )
 
         self._show_confirmation(
@@ -1546,7 +1654,7 @@ class MathAdventureApp:
         if isinstance(self.special_mode, BlitzMode | WarmUpMode):
             self.special_mode.started_at += paused_for
         self.dialog_open = False
-        if self.race_competitors and self.session and self.session.phase is RoundPhase.TASK:
+        if self.race_state is not None and self.session and self.session.phase is RoundPhase.TASK:
             self._schedule_ghost_tick()
         if self.session and self.session.feedback and self.session.feedback.is_correct:
             self._schedule_auto_advance(0.8)
@@ -1701,7 +1809,7 @@ class MathAdventureApp:
                 end_reason=end_reason,
             )
         )
-        if self.race_competitors and not self.dialog_open:
+        if self.race_state is not None and not self.dialog_open:
             self._refresh_race_panel()
 
     def _next_task(self) -> None:
@@ -1731,7 +1839,7 @@ class MathAdventureApp:
         self.ghost_tick_timer = None
         if (
             not self.dialog_open
-            and self.race_competitors
+            and self.race_state is not None
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.race_live_panel is not None
