@@ -72,6 +72,19 @@ Rennen und Ranglisten dürfen nur Aufzeichnungen vergleichen, deren normalisiert
 
 Die folgenden modusspezifischen Abschnitte erläutern die verbindlichen Details; die Tabelle dient ausschließlich als knappe, vollständige Übersicht.
 
+### Antwortversuche und `PERFECT_RUN`
+
+Eine Aufgabe hat – sofern die konkrete Spieldefinition zwei Versuche vorsieht – erst nach
+einer richtigen Antwort oder nach dem Ausschöpfen beider Versuche ein endgültiges Ergebnis.
+Ein falscher erster Versuch ist daher noch **kein** Fehler der Aufgabe: Er wird weder als
+abgeschlossene falsche Aufgabe gewertet noch beendet er einen `PERFECT_RUN`. Korrigiert die
+spielende Person die Antwort im zweiten Versuch, gilt die Aufgabe als richtig gelöst.
+
+Nur wenn auch der letzte erlaubte Versuch falsch ist (oder eine Aufgabendeadline ohne richtige
+Antwort verstreicht), entsteht ein endgültig falsches Aufgabenergebnis. Genau dieses Ereignis
+beendet `PERFECT_RUN`. Eine eventuell konfigurierte äußere Gesamtdauer kann die Runde unabhängig
+davon bereits vorher beenden.
+
 `wrong_answer_penalty` beeinflusst ausschließlich die Punktwertung. Der Wert verändert insbesondere weder die Anzahl richtiger Antworten noch die Anzahl abgeschlossener Aufgaben oder die Ziellinie eines Aufgaben-Sprints.
 
 ### PRACTICE
