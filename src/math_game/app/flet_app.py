@@ -21,11 +21,21 @@ from math_game.app.stats import (
     StatisticsRepository,
     computer_competitor,
 )
-from math_game.core.contracts import ArithmeticOperation, GameMode
+from math_game.core.contracts import ArithmeticOperation, EndReason, GameMode
 from math_game.core.game_definition import OperationDefinition
 from math_game.core.models import DefinitionHash, OperandRange
 from math_game.core.presets import DefinedGame, GameRepository, OperationWeights
-from math_game.core.race import RaceConfig, RaceEventKind, RaceKind, race_config_for_game
+from math_game.core.race import (
+    RaceConfig,
+    RaceEvent,
+    RaceEventKind,
+    RaceKind,
+    RacerStatus,
+    RaceStanding,
+    RaceState,
+    apply_race_event,
+    race_config_for_game,
+)
 from math_game.core.task import ArithmeticTask
 from math_game.generators import DefinedGameTaskGenerator
 from math_game.generators.random_source import PythonRandomSource
@@ -778,14 +788,11 @@ class MathAdventureApp:
 
         if self.race_state is None:
             raise RuntimeError("race panel requires a configured race")
-        race = self.race_state.config
         elapsed = max(0.0, time.monotonic() - self.round_started_at)
-        own_points = self.live_score_events[-1].points_after if self.live_score_events else 0
         own_name = self.active_player.name if self.active_player else "Du"
         own_icon = self.active_player.icon if self.active_player else "🙂"
-        racers: list[tuple[str, str, str, int, str]] = [
-            (own_name, own_icon, self.race_state.vehicle, own_points, "Dein aktueller Lauf")
-        ]
+        identities = [("player", own_name, own_icon, self.race_state.vehicle)]
+        event_sets = [self.live_score_events]
         opponent_vehicles = (
             "🏎️",
             "🚀",
@@ -805,41 +812,21 @@ class MathAdventureApp:
             "🐬",
         )
         for index, competitor in enumerate(self.race_state.competitors):
-            events = competitor.statistic.events
-            past = [event for event in events if event.elapsed_seconds <= elapsed]
-            points = past[-1].points_after if past else 0
-            next_event = next((event for event in events if event.elapsed_seconds > elapsed), None)
-            if next_event is None:
-                detail = "im Ziel"
-            else:
-                action = "+ Punkt" if next_event.correct else "Fehler"
-                detail = f"{action} bei {next_event.elapsed_seconds:.1f} s"
-            racers.append(
+            identities.append(
                 (
+                    f"opponent-{index}",
                     competitor.player_name,
                     competitor.player_icon,
                     opponent_vehicles[index % len(opponent_vehicles)],
-                    points,
-                    detail,
                 )
             )
-        ordered = sorted(racers, key=lambda racer: racer[3], reverse=True)
-        own_rank = next(
-            index for index, racer in enumerate(ordered, start=1) if racer[0] == own_name
-        )
-        leading_points = ordered[0][3]
+            event_sets.append(list(competitor.statistic.events))
+        state = self._race_snapshot(identities, event_sets, elapsed)
+        standings = {standing.racer_id: standing for standing in state.standings}
+        own_rank = standings["player"].rank
         tracks = [
-            self._race_track(
-                name,
-                player_icon,
-                vehicle,
-                points,
-                f"{detail} · {leading_points - points} P Rückstand"
-                if points < leading_points
-                else f"{detail} · in Führung",
-                name == own_name,
-            )
-            for name, player_icon, vehicle, points, detail in racers
+            self._race_track(name, player_icon, vehicle, standings[racer_id], racer_id == "player")
+            for racer_id, name, player_icon, vehicle in identities
         ]
         return ft.Container(
             padding=16,
@@ -854,14 +841,14 @@ class MathAdventureApp:
                         controls=[
                             ft.Text("🏁 LIVE-RENNEN", size=19, weight=ft.FontWeight.BOLD),
                             ft.Text(
-                                f"Platz {own_rank}/{len(racers)} · "
-                                f"{self._race_summary(race)}",
+                                f"Platz {own_rank}/{len(identities)} · "
+                                f"{self._race_summary(self.race_state.config)}",
                                 color=PRIMARY,
                                 weight=ft.FontWeight.BOLD,
                             ),
                         ],
                     ),
-                    ft.Text("Jeder richtige Treffer bringt dich sichtbar nach vorn.", color=MUTED),
+                    ft.Text("Fortschritt und Rang folgen der jeweiligen Rennregel.", color=MUTED),
                     *tracks,
                 ],
             ),
@@ -872,14 +859,12 @@ class MathAdventureApp:
         name: str,
         player_icon: str,
         vehicle: str,
-        points: int,
-        detail: str,
+        standing: RaceStanding,
         is_player: bool,
     ) -> ft.Control:
         if self.race_state is None:
             raise RuntimeError("race track requires a configured race")
-        target = max(1.0, self._race_progress_target(self.race_state.config))
-        progress = min(1.0, max(0.0, points / target))
+        progress = standing.progress
         track_width = 470
         vehicle_left = round(progress * (track_width - 35))
         return ft.Container(
@@ -894,7 +879,12 @@ class MathAdventureApp:
                         controls=[
                             ft.Text(player_icon, size=22),
                             ft.Text(name, expand=True, weight=ft.FontWeight.BOLD),
-                            ft.Text(f"{points} P · {detail}", size=11, color=MUTED),
+                            ft.Text(
+                                f"Platz {standing.rank} · {self._standing_status(standing)} · "
+                                f"{self._standing_detail(self.race_state.config, standing)}",
+                                size=11,
+                                color=MUTED,
+                            ),
                         ]
                     ),
                     ft.Stack(
@@ -918,6 +908,108 @@ class MathAdventureApp:
             ),
         )
 
+    def _race_snapshot(
+        self,
+        identities: list[tuple[str, str, str, str]],
+        event_sets: list[list[ScoreEvent]],
+        elapsed: float,
+    ) -> RaceState:
+        """Replay visible facts and let the race engine derive every standing."""
+
+        assert self.race_state is not None
+        config = self.race_state.config
+        state = RaceState.create([identity[0] for identity in identities])
+        timeline = sorted(
+            (
+                event.elapsed_seconds,
+                racer_id,
+                event,
+            )
+            for (racer_id, *_), events in zip(identities, event_sets, strict=True)
+            for event in events
+            if event.elapsed_seconds <= elapsed and event.task_completed is not False
+        )
+        for event_time, racer_id, score_event in timeline:
+            try:
+                kind = RaceEventKind(
+                    score_event.event_kind
+                    or (
+                        RaceEventKind.CORRECT_ANSWER
+                        if score_event.correct
+                        else RaceEventKind.WRONG_ANSWER
+                    )
+                )
+            except ValueError:
+                kind = (
+                    RaceEventKind.CORRECT_ANSWER
+                    if score_event.correct
+                    else RaceEventKind.WRONG_ANSWER
+                )
+            state = apply_race_event(config, state, RaceEvent(kind, racer_id, event_time))
+        state = apply_race_event(
+            config, state, RaceEvent(RaceEventKind.TIME_ELAPSED, elapsed_seconds=elapsed)
+        )
+        # A ghost must never be presented as having crossed a line merely because
+        # its recording has no more events.
+        if not state.finished:
+            for (racer_id, *_), events in zip(identities[1:], event_sets[1:], strict=True):
+                if events and elapsed >= events[-1].elapsed_seconds:
+                    state = apply_race_event(
+                        config,
+                        state,
+                        RaceEvent(
+                            RaceEventKind.RECORDING_ENDED, racer_id, events[-1].elapsed_seconds
+                        ),
+                    )
+        return state
+
+    @staticmethod
+    def _standing_status(standing: RaceStanding) -> str:
+        target_reasons = {
+            EndReason.TASK_TARGET_REACHED,
+            EndReason.CORRECT_TARGET_REACHED,
+            EndReason.COMBO_TARGET_REACHED,
+        }
+        if standing.status is RacerStatus.FINISHED and standing.end_reason in target_reasons:
+            return "im Ziel"
+        if standing.end_reason is EndReason.TIME_LIMIT_REACHED:
+            return "Zeit abgelaufen"
+        if standing.status is RacerStatus.ELIMINATED:
+            return "nach Fehler ausgeschieden"
+        if standing.status is RacerStatus.ABORTED:
+            return "abgebrochen"
+        if standing.status is RacerStatus.RECORDING_ENDED:
+            return "Aufzeichnung beendet"
+        return "läuft"
+
+    @staticmethod
+    def _standing_detail(config: RaceConfig, standing: RaceStanding) -> str:
+        if config.kind is RaceKind.TASKS:
+            tasks = f"Aufgabe {standing.completed_tasks}/{config.task_target}"
+            if config.task_timeout_seconds is not None:
+                return f"{standing.timeouts} Timeouts · {tasks}"
+            return tasks
+        if config.kind is RaceKind.CORRECT_ANSWERS:
+            return f"{standing.correct_answers}/{config.correct_target} richtig"
+        if config.kind is RaceKind.TIME_LIMIT:
+            remaining = max(0, round((config.duration_seconds or 0) - standing.elapsed_seconds))
+            return f"Noch {remaining} s · {standing.score} Punkte"
+        if config.kind is RaceKind.PERFECT:
+            return f"Serie {standing.streak}"
+        return f"Serie {standing.streak}/{config.combo_target}"
+
+    @staticmethod
+    def _race_kind_name(config: RaceConfig) -> str:
+        if config.kind is RaceKind.TASKS and config.task_timeout_seconds is not None:
+            return "Aufgabenzeitmodus"
+        return {
+            RaceKind.TASKS: "Aufgaben-Sprint",
+            RaceKind.CORRECT_ANSWERS: "Zieljagd",
+            RaceKind.TIME_LIMIT: "Zeitspiel",
+            RaceKind.PERFECT: "Perfect Run",
+            RaceKind.COMBO: "Serienrennen",
+        }[config.kind]
+
     def _finished_view(self) -> ft.Column:
         session = self._active_session()
         game = self.active_game
@@ -934,6 +1026,7 @@ class MathAdventureApp:
                     size=20,
                     color=MUTED,
                 ),
+                *self._race_result_controls(),
                 *self._race_controls(),
                 *self._dashboard_controls(
                     self.race_state.comparison_hash
@@ -955,6 +1048,55 @@ class MathAdventureApp:
                 ft.TextButton("Zur Spieleauswahl", on_click=lambda _: self._choose_another()),
             ],
         )
+
+    def _race_result_controls(self) -> list[ft.Control]:
+        """Explain the race result without replacing the ordinary game statistics."""
+
+        if self.race_state is None:
+            return []
+        elapsed = max(0.0, time.monotonic() - self.round_started_at)
+        own_name = self.active_player.name if self.active_player else "Du"
+        identities = [("player", own_name, "", "")]
+        event_sets = [self.live_score_events]
+        for index, competitor in enumerate(self.race_state.competitors):
+            identities.append((f"opponent-{index}", competitor.player_name, "", ""))
+            event_sets.append(list(competitor.statistic.events))
+        state = self._race_snapshot(identities, event_sets, elapsed)
+        names = {racer_id: name for racer_id, name, *_ in identities}
+        winner = names.get(state.winner_id, "Kein Gewinner") if state.winner_id else "Kein Gewinner"
+        winner_standing = next(
+            (standing for standing in state.standings if standing.racer_id == state.winner_id),
+            state.standings[0],
+        )
+        cause = self._standing_status(winner_standing)
+        if state.end_reason is EndReason.ABORTED:
+            cause = "abgebrochen"
+        return [
+            ft.Container(
+                padding=16,
+                bgcolor="#EEF7F3",
+                border_radius=16,
+                border=ft.border.all(1, "#B9DECF"),
+                content=ft.Column(
+                    spacing=6,
+                    controls=[
+                        ft.Text("🏁 Rennergebnis", size=21, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Rennart: {self._race_kind_name(self.race_state.config)}"),
+                        ft.Text(f"Endursache: {cause}"),
+                        ft.Text(f"Gewinner: {winner}", weight=ft.FontWeight.BOLD, color=SUCCESS),
+                        ft.Text(
+                            "Leistung: "
+                            + self._standing_detail(self.race_state.config, winner_standing)
+                        ),
+                        ft.Text(
+                            "Tie-Breaker: richtige Antworten, Punkte, weniger Fehler, kürzere Zeit",
+                            color=MUTED,
+                            size=12,
+                        ),
+                    ],
+                ),
+            )
+        ]
 
     def _dashboard_controls(
         self, definition_hash: str, *, highlight_latest: bool = False
@@ -1225,9 +1367,7 @@ class MathAdventureApp:
         comparison_hash = (
             self._race_comparison_hash(game, initial_config) if initial_config is not None else ""
         )
-        recorded = self.statistics.race_competitors(
-            comparison_hash, 8, initial_config
-        )
+        recorded = self.statistics.race_competitors(comparison_hash, 8, initial_config)
         own_summary = (
             self.statistics.summary(self.active_player.id, comparison_hash)
             if self.active_player and initial_config is not None

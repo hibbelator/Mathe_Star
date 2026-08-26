@@ -7,9 +7,76 @@ import pytest
 
 from math_game.app.flet_app import MathAdventureApp, parse_race_levels
 from math_game.app.session import RoundPhase
-from math_game.core.contracts import GameMode
+from math_game.core.contracts import EndReason, GameMode
 from math_game.core.presets import EXCEL_PRESETS, DefinedGame
-from math_game.core.race import RaceConfig, RaceKind
+from math_game.core.race import (
+    RaceConfig,
+    RaceEvent,
+    RaceEventKind,
+    RaceKind,
+    RaceState,
+    apply_race_event,
+)
+
+
+@pytest.mark.parametrize(
+    ("config", "events", "detail", "status"),
+    [
+        (RaceConfig(RaceKind.TASKS, task_target=20), [], "Aufgabe 0/20", "läuft"),
+        (
+            RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=25),
+            [RaceEventKind.CORRECT_ANSWER] * 2,
+            "2/25 richtig",
+            "läuft",
+        ),
+        (
+            RaceConfig(RaceKind.PERFECT, correct_target=20),
+            [RaceEventKind.CORRECT_ANSWER, RaceEventKind.WRONG_ANSWER],
+            "Serie 0",
+            "nach Fehler ausgeschieden",
+        ),
+        (
+            RaceConfig(RaceKind.TASKS, task_target=20, task_timeout_seconds=5),
+            [RaceEventKind.TIMEOUT, RaceEventKind.TIMEOUT],
+            "2 Timeouts · Aufgabe 2/20",
+            "läuft",
+        ),
+    ],
+)
+def test_race_standing_drives_rule_specific_detail_and_status(
+    config: RaceConfig,
+    events: list[RaceEventKind],
+    detail: str,
+    status: str,
+) -> None:
+    state = RaceState.create(["player"])
+    for elapsed, kind in enumerate(events, 1):
+        state = apply_race_event(config, state, RaceEvent(kind, "player", elapsed))
+    standing = (
+        state.standings[0]
+        if state.standings
+        else apply_race_event(
+            config, state, RaceEvent(RaceEventKind.TIME_ELAPSED, elapsed_seconds=0)
+        ).standings[0]
+    )
+
+    dynamic_app: Any = MathAdventureApp
+    assert dynamic_app._standing_detail(config, standing) == detail
+    assert dynamic_app._standing_status(standing) == status
+
+
+def test_time_race_uses_elapsed_progress_and_never_calls_timeout_a_finish_line() -> None:
+    config = RaceConfig(RaceKind.TIME_LIMIT, duration_seconds=10)
+    state = apply_race_event(
+        config,
+        RaceState.create(["player"]),
+        RaceEvent(RaceEventKind.TIME_ELAPSED, elapsed_seconds=10),
+    )
+
+    assert state.standings[0].progress == 1
+    assert state.standings[0].end_reason is EndReason.TIME_LIMIT_REACHED
+    dynamic_app: Any = MathAdventureApp
+    assert dynamic_app._standing_status(state.standings[0]) == "Zeit abgelaufen"
 
 
 def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
@@ -95,6 +162,7 @@ def _race_dialog(game: DefinedGame) -> tuple[Any, Any, list[Any]]:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
     page = SimpleNamespace(opened=None, update=lambda: None)
+
     def open_dialog(dialog: object) -> None:
         page.opened = dialog
 
