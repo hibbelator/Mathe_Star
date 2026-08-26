@@ -74,6 +74,7 @@ class RoundStatistic:
         if self.event_schema_version >= 2:
             required = all(
                 event.event_kind is not None
+                and event.event_kind in RaceEventKind
                 and event.task_completed is not None
                 and event.correct_answers is not None
                 and event.completed_tasks is not None

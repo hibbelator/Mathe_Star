@@ -7,6 +7,7 @@ import pytest
 
 from math_game.app.flet_app import MathAdventureApp, parse_race_levels
 from math_game.app.session import RoundPhase
+from math_game.app.stats import ScoreEvent
 from math_game.core.contracts import EndReason, GameMode
 from math_game.core.presets import EXCEL_PRESETS, DefinedGame
 from math_game.core.race import (
@@ -14,6 +15,7 @@ from math_game.core.race import (
     RaceEvent,
     RaceEventKind,
     RaceKind,
+    RacerStatus,
     RaceState,
     apply_race_event,
 )
@@ -109,7 +111,15 @@ def test_race_levels_accept_ranges_and_individual_runners() -> None:
     assert parse_race_levels("2, 2, 4") == [2, 4]
 
 
-def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
+def test_race_dialog_uses_page_close_for_cancel_and_start(monkeypatch: Any) -> None:
+    class ImmediateTimer:
+        def __init__(self, _: float, callback: Any) -> None:
+            self.callback = callback
+
+        def start(self) -> None:
+            self.callback()
+
+    monkeypatch.setattr("math_game.app.flet_app.threading.Timer", ImmediateTimer)
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
     calls: list[tuple[str, object]] = []
@@ -152,7 +162,6 @@ def test_race_dialog_uses_page_close_for_cancel_and_start() -> None:
     dialog = calls[-1][1]
     dialog.update = lambda: None
     dialog.actions[1].on_click(None)
-    time.sleep(0.2)
 
     assert calls[-2] == ("close", dialog)
     assert calls[-1] == ("start", EXCEL_PRESETS[0])
@@ -319,3 +328,89 @@ def test_next_task_updates_existing_controls_without_full_render() -> None:
     assert dynamic_app.task_prompt.value == "8 + 7 = ?"
     assert dynamic_app.answer_field.value == ""
     assert dynamic_app.task_action.text == "Antwort prüfen"
+
+
+def test_recording_end_is_not_presented_as_finish_line() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.race_state = SimpleNamespace(config=RaceConfig(RaceKind.TASKS, task_target=3))
+    identities = [("player", "Du", "", ""), ("ghost", "Mia", "", "")]
+    events = [[], [ScoreEvent(1.0, True, 1, task_completed=True)]]
+
+    state = dynamic_app._race_snapshot(identities, events, elapsed=2.0)
+    ghost = next(item for item in state.standings if item.racer_id == "ghost")
+
+    assert ghost.status is RacerStatus.RECORDING_ENDED
+    assert dynamic_app._standing_status(ghost) == "Aufzeichnung beendet"
+    assert ghost.end_reason is EndReason.COMPLETED
+
+
+def test_dialog_pause_excludes_time_from_player_and_opponent_progress(monkeypatch: Any) -> None:
+    now = [10.0]
+    monkeypatch.setattr("math_game.app.flet_app.time.monotonic", lambda: now[0])
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.dialog_open = False
+    dynamic_app.dialog_paused_at = 0.0
+    dynamic_app.round_started_at = 1.0
+    dynamic_app.race_state = SimpleNamespace(
+        config=RaceConfig(RaceKind.TIME_LIMIT, duration_seconds=20)
+    )
+    dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=None)
+    dynamic_app.special_mode = None
+    dynamic_app.live_score_events = []
+    dynamic_app._cancel_ghost_tick = lambda: None
+    dynamic_app._cancel_auto_advance = lambda: None
+    dynamic_app._cancel_special_deadline = lambda: None
+    dynamic_app._schedule_ghost_tick = lambda: None
+
+    before = dynamic_app._race_snapshot(
+        [("player", "Du", "", ""), ("ghost", "Mia", "", "")], [[], []], 9.0
+    )
+    dynamic_app._pause_for_dialog()
+    now[0] = 110.0
+    dynamic_app._resume_after_dialog()
+    elapsed = now[0] - dynamic_app.round_started_at
+    after = dynamic_app._race_snapshot(
+        [("player", "Du", "", ""), ("ghost", "Mia", "", "")], [[], []], elapsed
+    )
+
+    assert elapsed == 9.0
+    assert [item.progress for item in after.standings] == [
+        item.progress for item in before.standings
+    ]
+
+
+def test_finished_render_cancels_ghost_and_auto_advance_timers() -> None:
+    class FakeTimer:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    ghost, advance = FakeTimer(), FakeTimer()
+    dynamic_app.ghost_tick_timer = ghost
+    dynamic_app.auto_advance_timer = advance
+    dynamic_app.special_mode = None
+    dynamic_app.session = SimpleNamespace(phase=RoundPhase.FINISHED)
+    dynamic_app.statistic_saved = True
+    dynamic_app.active_game = None
+    dynamic_app.active_player = None
+    dynamic_app.answer_field = None
+    dynamic_app.dialog_open = False
+    dynamic_app.race_state = SimpleNamespace()
+
+    def add_control(_: object) -> None:
+        return None
+
+    dynamic_app.page = SimpleNamespace(clean=lambda: None, add=add_control, update=lambda: None)
+    dynamic_app._finished_view = lambda: SimpleNamespace()
+
+    dynamic_app.render()
+
+    assert ghost.cancelled and advance.cancelled
+    assert dynamic_app.ghost_tick_timer is None
+    assert dynamic_app.auto_advance_timer is None

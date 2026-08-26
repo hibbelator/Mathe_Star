@@ -121,3 +121,162 @@ def test_factory_reports_missing_required_value_as_unavailable() -> None:
     unavailable = race_config_for_game(_game(GameMode.TASK_SPRINT, task_count=None))
     assert not unavailable.available
     assert "task_target" in (unavailable.reason or "")
+
+
+def _replay(config: RaceConfig, *events: RaceEvent) -> RaceState:
+    """Replay facts without involving wall-clock time or background workers."""
+
+    state = RaceState.create(["Ada", "Bert"])
+    for event in events:
+        state = apply_race_event(config, state, event)
+    return state
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        (RaceEventKind.CORRECT_ANSWER,) * 3,
+        (RaceEventKind.WRONG_ANSWER,) * 3,
+        (
+            RaceEventKind.WRONG_ANSWER,
+            RaceEventKind.CORRECT_ANSWER,
+            RaceEventKind.WRONG_ANSWER,
+        ),
+    ],
+)
+def test_task_sprint_finishes_after_exactly_completed_task_target(
+    answers: tuple[RaceEventKind, ...],
+) -> None:
+    config = RaceConfig(RaceKind.TASKS, task_target=3)
+    state = RaceState.create(["Ada"])
+
+    for number, answer in enumerate(answers, 1):
+        state = apply_race_event(config, state, RaceEvent(answer, "Ada", float(number)))
+        assert state.finished is (number == 3)
+
+    assert state.racers[0].completed_tasks == 3
+    assert state.racers[0].correct_answers == answers.count(RaceEventKind.CORRECT_ANSWER)
+
+
+def test_target_hunt_ignores_wrong_answers_for_finish_line() -> None:
+    config = RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=2)
+    state = _replay(
+        config,
+        RaceEvent(RaceEventKind.WRONG_ANSWER, "Ada", 1),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 2),
+        RaceEvent(RaceEventKind.WRONG_ANSWER, "Ada", 3),
+    )
+    assert not state.finished
+
+    state = apply_race_event(config, state, RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 4))
+    assert state.finished
+    assert state.racers[0].correct_answers == 2
+    assert state.racers[0].completed_tasks == 4
+
+
+def test_time_race_finishes_every_racer_together_and_ranks_correct_then_time() -> None:
+    config = RaceConfig(RaceKind.TIME_LIMIT, duration_seconds=10, wrong_answer_penalty=-2)
+    state = _replay(
+        config,
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Bert", 2),
+        RaceEvent(RaceEventKind.WRONG_ANSWER, "Bert", 3),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 4),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 6),
+    )
+    state = apply_race_event(
+        config, state, RaceEvent(RaceEventKind.TIME_ELAPSED, elapsed_seconds=10)
+    )
+
+    assert state.finished
+    assert {racer.finish_time for racer in state.racers} == {10}
+    assert all(racer.end_reason is EndReason.TIME_LIMIT_REACHED for racer in state.racers)
+    assert [standing.racer_id for standing in state.standings] == ["Ada", "Bert"]
+
+
+@pytest.mark.parametrize("failure", [RaceEventKind.WRONG_ANSWER, RaceEventKind.TIMEOUT])
+def test_perfect_run_only_eliminates_racer_with_first_final_failure(
+    failure: RaceEventKind,
+) -> None:
+    state = _replay(
+        RaceConfig(RaceKind.PERFECT, correct_target=3),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 1),
+        RaceEvent(failure, "Ada", 2),
+    )
+
+    assert state.racers[0].status is RacerStatus.ELIMINATED
+    assert state.racers[1].status is RacerStatus.RACING
+    assert not state.finished
+
+
+def test_task_timeout_is_distinct_and_advances_task_progress() -> None:
+    config = RaceConfig(RaceKind.TASKS, task_target=2, task_timeout_seconds=5)
+    state = apply_race_event(
+        config,
+        RaceState.create(["Ada"]),
+        RaceEvent(RaceEventKind.TIMEOUT, "Ada", 5),
+    )
+
+    racer = state.racers[0]
+    assert racer.timeouts == racer.errors == racer.completed_tasks == 1
+    assert racer.correct_answers == 0
+    assert progress(config, racer) == 0.5
+    assert not state.finished
+
+
+def test_wrong_answer_penalty_changes_only_score_at_event_time() -> None:
+    config = RaceConfig(RaceKind.TASKS, task_target=3, wrong_answer_penalty=-4)
+    state = apply_race_event(
+        config,
+        RaceState.create(["Ada"]),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 1),
+    )
+    before = state.racers[0]
+    state = apply_race_event(config, state, RaceEvent(RaceEventKind.WRONG_ANSWER, "Ada", 2))
+    after = state.racers[0]
+
+    assert (before.score, before.completed_tasks, before.correct_answers) == (1, 1, 1)
+    assert (after.score, after.completed_tasks, after.correct_answers) == (-3, 2, 1)
+
+
+def test_equal_standings_share_rank_and_have_stable_identifier_order() -> None:
+    config = RaceConfig(RaceKind.TASKS, task_target=3)
+    state = _replay(
+        config,
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Bert", 1),
+        RaceEvent(RaceEventKind.CORRECT_ANSWER, "Ada", 1),
+    )
+
+    assert [(item.racer_id, item.rank) for item in state.standings] == [
+        ("Ada", 1),
+        ("Bert", 1),
+    ]
+
+
+def test_every_game_mode_has_a_tested_race_rule_or_explicit_unavailability() -> None:
+    expected = {
+        GameMode.PRACTICE: None,
+        GameMode.TIMED: RaceKind.TIME_LIMIT,
+        GameMode.FIXED_TASKS: RaceKind.TASKS,
+        GameMode.MISTAKE_REVIEW: None,
+        GameMode.TIME_ATTACK: RaceKind.TIME_LIMIT,
+        GameMode.TASK_SPRINT: RaceKind.TASKS,
+        GameMode.PERFECT_RUN: RaceKind.PERFECT,
+        GameMode.TARGET_HUNT: RaceKind.CORRECT_ANSWERS,
+        GameMode.PER_TASK_TIMER: RaceKind.TASKS,
+        GameMode.COMBO: RaceKind.COMBO,
+        GameMode.BLITZ: RaceKind.TIME_LIMIT,
+        GameMode.ACCURACY: RaceKind.TASKS,
+        GameMode.PLUMI_ENDLESS: None,
+        GameMode.WARM_UP: None,
+    }
+    assert set(expected) == set(GameMode)
+
+    for mode, kind in expected.items():
+        availability = race_config_for_game(_game(mode))
+        assert availability.available is (kind is not None), mode
+        if kind is None:
+            assert availability.config is None
+            assert mode.value in (availability.reason or "")
+        else:
+            assert availability.config is not None
+            assert availability.config.kind is kind

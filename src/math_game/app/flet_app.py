@@ -132,6 +132,10 @@ class MathAdventureApp:
 
     def render(self) -> None:
         self._cancel_auto_advance()
+        # A render can be the transition to the result screen.  Cancel the old
+        # recurring race callback first; a live task schedules exactly one new
+        # callback below, while a finished round deliberately schedules none.
+        self._cancel_ghost_tick()
         self.page.clean()
         if self.special_mode is not None:
             content = self._special_mode_view()
