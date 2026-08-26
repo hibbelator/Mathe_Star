@@ -1,5 +1,5 @@
 [project]
-name = "math-game"
+name = "matheabenteuer"
 version = "0.1.0"
 description = "Domain contracts for Mathe-Abenteuer, a comparable math practice game"
 readme = "README.md"
@@ -9,8 +9,22 @@ authors = [
   { name = "Mathe-Abenteuer Team" },
 ]
 dependencies = [
-  "flet>=0.28.3,<0.29",
+  "flet==0.28.3",
 ]
+
+[tool.flet]
+org = "de.familie"
+product = "Mathe-Abenteuer"
+company = "Familie"
+copyright = "Copyright (c) 2026 Familie"
+build_number = 1
+build_version = "0.1.0"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.android]
+adaptive_icon_background = "#536DFE"
 
 [project.scripts]
 math-game = "math_game.app.flet_app:run"

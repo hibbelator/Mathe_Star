@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from math_game.app.flet_app import MathAdventureApp, parse_race_levels
+from math_game.app.flet_app import (
+    MathAdventureApp,
+    layout_metrics,
+    normalize_integer_input,
+    parse_race_levels,
+)
 from math_game.app.session import RoundPhase
 from math_game.app.stats import ScoreEvent
 from math_game.core.contracts import EndReason, GameMode
@@ -20,6 +25,44 @@ from math_game.core.race import (
     RaceState,
     apply_race_event,
 )
+
+
+@pytest.mark.parametrize("width", [320, 360, 390, 480])
+def test_phone_layout_never_exceeds_available_width(width: int) -> None:
+    metrics = layout_metrics(width)
+
+    assert metrics.content_width <= width
+    assert metrics.track_width <= metrics.content_width - 2 * metrics.padding
+    assert metrics.track_width >= 220
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("42", "42"),
+        ("0", "0"),
+        ("-7", "-7"),
+        (" 12 ", "12"),
+        ("", ""),
+        ("abc", ""),
+        ("1.5", "15"),
+        ("4-2", "42"),
+    ],
+)
+def test_integer_input_normalization(raw: str, expected: str) -> None:
+    assert normalize_integer_input(raw) == expected
+
+
+def test_rapid_duplicate_submission_is_ignored() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.submission_in_progress = True
+    dynamic_app.answer_field = SimpleNamespace(value="7")
+    dynamic_app._active_session = lambda: (_ for _ in ()).throw(
+        AssertionError("duplicate reached the session")
+    )
+
+    dynamic_app._on_submit_clicked(None)
 
 
 @pytest.mark.parametrize(
@@ -125,9 +168,7 @@ def test_async_race_loop_refreshes_repeatedly_and_replays_opponent_events(
     dynamic_app.ghost_tick_generation = 7
     dynamic_app.dialog_open = False
     dynamic_app.round_started_at = 0.0
-    dynamic_app.race_state = SimpleNamespace(
-        config=RaceConfig(RaceKind.TASKS, task_target=3)
-    )
+    dynamic_app.race_state = SimpleNamespace(config=RaceConfig(RaceKind.TASKS, task_target=3))
     dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK)
     dynamic_app.race_live_panel = SimpleNamespace()
     opponent_events = [ScoreEvent(1.0, True, 1, task_completed=True)]

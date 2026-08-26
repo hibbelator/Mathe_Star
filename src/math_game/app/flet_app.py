@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import shutil
 import sys
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import flet as ft
 
+from math_game.app.database import AppDatabase
 from math_game.app.players import Player, PlayerRepository
 from math_game.app.session import RoundPhase, RoundSession
 from math_game.app.stats import (
@@ -49,6 +53,38 @@ from math_game.modes.warm_up import WarmUpPhase
 
 BACKGROUND, INK, PRIMARY, SUCCESS = "#F4F7FF", "#17223B", "#536DFE", "#168F68"
 WARNING, ERROR, CARD, MUTED = "#E67E22", "#C2415B", "#FFFFFF", "#52607A"
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutMetrics:
+    """Dimensions shared by all responsive views."""
+
+    content_width: float
+    padding: float
+    track_width: float
+    compact: bool
+
+
+def layout_metrics(page_width: float | None) -> LayoutMetrics:
+    """Calculate overflow-safe dimensions for phone, tablet and desktop."""
+
+    width = max(280.0, page_width or 760.0)
+    padding = 12.0 if width < 400 else 20.0 if width < 700 else 32.0
+    content_width = min(760.0, width - (8.0 if width < 700 else 32.0))
+    return LayoutMetrics(
+        content_width,
+        padding,
+        max(220.0, content_width - 2 * padding - 20),
+        width < 480,
+    )
+
+
+def normalize_integer_input(value: str, *, allow_negative: bool = True) -> str:
+    """Keep only an optional leading minus and decimal digits."""
+
+    stripped = value.strip()
+    sign = "-" if allow_negative and stripped.startswith("-") else ""
+    return sign + re.sub(r"\D", "", stripped)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +159,8 @@ class MathAdventureApp:
         self.special_generator: DefinedGameTaskGenerator | None = None
         self.special_task: ArithmeticTask | None = None
         self.special_feedback = ""
+        self.submission_in_progress = False
+        self.paused = False
         page.title = "Mathe-Abenteuer"
         page.bgcolor, page.padding = BACKGROUND, 24
         # The central card can be taller than a small laptop or phone viewport.
@@ -131,6 +169,10 @@ class MathAdventureApp:
         page.scroll = ft.ScrollMode.AUTO
         page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
         page.on_keyboard_event = self._on_keyboard
+        page.on_resized = self._on_resize
+        page.on_view_pop = self._on_android_back
+        if hasattr(page, "on_app_lifecycle_state_change"):
+            page.on_app_lifecycle_state_change = self._on_lifecycle_change
         self.render()
 
     def render(self) -> None:
@@ -160,8 +202,15 @@ class MathAdventureApp:
             content = self._players_view()
         else:
             content = self._main_menu_view()
+        metrics = layout_metrics(getattr(self.page, "width", None))
         self.page.add(
-            ft.Container(width=760, padding=32, bgcolor=CARD, border_radius=28, content=content)
+            ft.Container(
+                width=metrics.content_width,
+                padding=metrics.padding,
+                bgcolor=CARD,
+                border_radius=18 if metrics.compact else 28,
+                content=content,
+            )
         )
         self.page.update()
         if (
@@ -204,9 +253,6 @@ class MathAdventureApp:
                     "⚙️ Spiele definieren (Optionen)", lambda _: self._navigate("editor")
                 ),
                 self._action_button("📊 Statistik / Auswertung", lambda _: self._navigate("stats")),
-                self._action_button(
-                    "🚪 Beenden / App schließen", lambda _: self.page.window.close()
-                ),
             ],
         )
 
@@ -425,7 +471,22 @@ class MathAdventureApp:
 
     def _players_view(self) -> ft.Column:
         name = ft.TextField(label="Name des Kindes")
-        image = ft.TextField(label="Bilddatei (optional)", hint_text="z. B. /Bilder/lina.png")
+        image = ft.TextField(label="Profilbild (optional)", read_only=True, expand=True)
+
+        def selected(event: ft.FilePickerResultEvent) -> None:
+            if not event.files or not event.files[0].path:
+                return
+            source = event.files[0].path
+            target_dir = AppDatabase().path.parent / "profile_images"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            suffix = Path(source).suffix.lower() or ".img"
+            target = target_dir / f"profile-{time.time_ns()}{suffix}"
+            shutil.copy2(source, target)
+            image.value = str(target)
+            image.update()
+
+        picker = ft.FilePicker(on_result=selected)
+        self.page.overlay.append(picker)
         icon = ft.Dropdown(
             label="Spielericon",
             value="🙂",
@@ -453,7 +514,23 @@ class MathAdventureApp:
                 )
             ],
         )
-        controls: list[ft.Control] = [name, icon, image]
+        controls: list[ft.Control] = [
+            name,
+            icon,
+            ft.Row(
+                wrap=True,
+                controls=[
+                    image,
+                    ft.OutlinedButton(
+                        "Bild auswählen",
+                        height=48,
+                        on_click=lambda _: picker.pick_files(
+                            allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE
+                        ),
+                    ),
+                ],
+            ),
+        ]
         if self.player_error:
             controls.append(ft.Text(self.player_error, color=ERROR))
 
@@ -557,6 +634,8 @@ class MathAdventureApp:
             autofocus=True,
             disabled=bool(feedback and feedback.is_task_complete and not feedback.is_correct),
             keyboard_type=ft.KeyboardType.NUMBER,
+            input_filter=ft.InputFilter(regex_string=r"^-?\d*$", allow=True),
+            on_change=self._sanitize_answer,
             on_submit=self._on_submit_clicked,
         )
         controls.append(self.answer_field)
@@ -646,6 +725,8 @@ class MathAdventureApp:
             text_size=28,
             autofocus=True,
             keyboard_type=ft.KeyboardType.NUMBER,
+            input_filter=ft.InputFilter(regex_string=r"^-?\d*$", allow=True),
+            on_change=self._sanitize_answer,
             on_submit=self._submit_special_answer,
         )
         controls: list[ft.Control] = [
@@ -672,13 +753,18 @@ class MathAdventureApp:
         )
 
     def _submit_special_answer(self, _: object) -> None:
+        if self.submission_in_progress:
+            return
         if self.answer_field is None or self.special_task is None or self.special_mode is None:
             return
+        self.submission_in_progress = True
         try:
             answer = int((self.answer_field.value or "").strip())
         except ValueError:
+            self.submission_in_progress = False
             self.answer_field.error_text = "Die Antwort muss eine ganze Zahl sein."
             self.page.update()
+            self.answer_field.focus()
             return
         mode, expected, now = self.special_mode, self.special_task.expected_answer, time.monotonic()
         try:
@@ -687,12 +773,14 @@ class MathAdventureApp:
             else:
                 correct = mode.submit(answer, expected)
         except RuntimeError:
+            self.submission_in_progress = False
             self.render()
             return
         self.special_feedback = "✓ Richtig!" if correct else f"✕ Richtig wäre {expected}."
         self._append_score_event(correct)
         if not self._special_finished(mode):
             self._next_special_task()
+        self.submission_in_progress = False
         self.render()
 
     def _special_finished(
@@ -872,7 +960,7 @@ class MathAdventureApp:
         if self.race_state is None:
             raise RuntimeError("race track requires a configured race")
         progress = standing.progress
-        track_width = 470
+        track_width = layout_metrics(getattr(self.page, "width", None)).track_width
         vehicle_left = round(progress * (track_width - 35))
         return ft.Container(
             padding=8,
@@ -1476,7 +1564,7 @@ class MathAdventureApp:
             scrollable=True,
             title=ft.Text("🏁 Rennen gegen Computergegner"),
             content=ft.Container(
-                width=520,
+                width=min(520, layout_metrics(getattr(self.page, "width", None)).track_width),
                 content=ft.Column(
                     tight=True,
                     spacing=10,
@@ -1715,7 +1803,12 @@ class MathAdventureApp:
 
     def _action_button(self, label: str, handler: Callable[[object], None]) -> ft.ElevatedButton:
         return ft.ElevatedButton(
-            text=label, on_click=handler, width=420, height=54, bgcolor=PRIMARY, color="white"
+            text=label,
+            on_click=handler,
+            width=min(420, layout_metrics(getattr(self.page, "width", None)).track_width),
+            height=54,
+            bgcolor=PRIMARY,
+            color="white",
         )
 
     def _navigate(self, view: str) -> None:
@@ -1819,15 +1912,23 @@ class MathAdventureApp:
         self.render()
 
     def _on_submit_clicked(self, _: object) -> None:
+        if self.submission_in_progress:
+            return
         if self.answer_field is None:
             return
+        self.submission_in_progress = True
         try:
             feedback = self._active_session().submit_answer(self.answer_field.value or "")
-        except ValueError as error:
+        except (ValueError, RuntimeError) as error:
+            self.submission_in_progress = False
+            if isinstance(error, RuntimeError):
+                return
             self.answer_field.error_text = str(error)
             self.page.update()
+            self.answer_field.focus()
             return
         self._append_score_event(feedback.is_correct)
+        self.submission_in_progress = False
         if self._active_session().phase is RoundPhase.FINISHED:
             self.render()
             return
@@ -2027,6 +2128,43 @@ class MathAdventureApp:
             and self.session.feedback.is_task_complete
         ):
             self._next_task()
+
+    def _sanitize_answer(self, _: object) -> None:
+        """Defensively normalise input because Android keyboards vary."""
+
+        if self.answer_field is None:
+            return
+        normalized = normalize_integer_input(self.answer_field.value or "")
+        if normalized != self.answer_field.value:
+            self.answer_field.value = normalized
+            self.answer_field.update()
+
+    def _on_resize(self, _: object) -> None:
+        """Rebuild controls at phone/tablet/desktop breakpoint changes."""
+
+        self.render()
+
+    def _on_lifecycle_change(self, event: object) -> None:
+        """Pause all wall-clock UI work while Android is in the background."""
+
+        state = str(getattr(event, "data", getattr(event, "state", ""))).lower()
+        if any(value in state for value in ("paused", "inactive", "detached", "hidden")):
+            if not self.paused:
+                self.paused = True
+                self._pause_for_dialog()
+            return
+        if "resumed" in state and self.paused:
+            self.paused = False
+            self._resume_after_dialog()
+            self.render()
+
+    def _on_android_back(self, _: object) -> None:
+        """Require confirmation before Android Back abandons a running round."""
+
+        if self.session is not None or self.special_mode is not None:
+            self._confirm_menu()
+        elif self.view != "menu":
+            self._navigate("menu")
 
     def _active_session(self) -> RoundSession:
         if self.session is None:

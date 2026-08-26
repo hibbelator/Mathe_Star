@@ -4,7 +4,7 @@
 **Projekt:** Mathe-Abenteuer  
 **Zielplattform:** private Android-App als direkt installierbare APK  
 **Package-ID:** `de.familie.matheabenteuer`  
-**Technikziel:** Python 3.13, Flet 0.86.x, SQLite, pytest, Ruff, Pyright
+**Technikziel:** Python 3.13, Flet 0.28.3, SQLite, pytest, Ruff, Pyright
 
 Dieses Dokument ist die zentrale Fortschritts- und Planungsübersicht für das Projekt. Es soll bei jeder Sitzung aktualisiert werden, damit Gesamtplan, aktueller Stand, offene Aufgaben, Entscheidungen, Teststatus und nächste Einstiegspunkte dauerhaft sichtbar bleiben.
 
@@ -75,6 +75,8 @@ Das Projekt folgt bewusst dem Prinzip: **WET vor DRY, wenn eine Abstraktion die 
 | Datenbankschema-Version | noch nicht implementiert | offen |
 | Android-Package-ID | `de.familie.matheabenteuer` | festgelegt |
 | App-Name | `Mathe-Abenteuer` | festgelegt |
+| Flet-Version | `0.28.3` (exakt gepinnt) | festgelegt |
+| Android-Version | `0.1.0` / Buildnummer `1` | festgelegt |
 
 Wichtig: Package-ID und Signaturschlüssel dürfen nach der ersten dauerhaft genutzten APK nicht mehr geändert werden, wenn Updates ohne Datenverlust installiert werden sollen.
 
