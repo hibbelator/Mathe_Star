@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import math
-import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from math_game.app.database import AppDatabase
 from math_game.core.race import RaceConfig, RaceEventKind, RaceKind
+from math_game.core.race_simulation import simulate_race
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,88 +138,51 @@ class RaceCompetitor:
 
 def computer_competitor(
     definition_hash: str,
+    race: RaceConfig,
     *,
     level: int,
-    target_points: int,
-    duration_seconds: float,
     baseline_points: float | None = None,
     seed: int = 0,
     variable: bool = True,
 ) -> RaceCompetitor:
-    """Create a fallible computer run for a race.
+    """Create a fallible computer run evaluated by the regular race engine.
 
-    Levels are percentile-like steps around the supplied personal baseline.  Level 5
-    is deliberately a little slower than average, while level 10 is roughly the
-    90th percentile: difficult, but not an implausible perfect machine.
+    Levels are percentile-like strength labels. Level 10 is roughly the 90th
+    percentile: difficult, but still a fallible and variably paced machine.
     """
 
-    if not 1 <= level <= 10:
-        raise ValueError("Die Computerstufe muss zwischen 1 und 10 liegen.")
-    if target_points <= 0 or duration_seconds <= 0:
-        raise ValueError("Rennziel und Renndauer müssen positiv sein.")
-    rng = random.Random(seed + level * 7919)
+    del baseline_points  # Kept as a source-selection compatibility hint for the UI.
+    simulation = simulate_race(race, level=level, seed=seed, variable=variable)
     percentile = 0.10 + (level - 1) * (0.80 / 9)
-    # A compact approximation of a normal quantile is sufficient for game balancing.
-    z_score = math.log(percentile / (1 - percentile)) / 1.7
-    base = baseline_points if baseline_points is not None else target_points * 0.72
-    expected_points = max(1.0, base * (0.92 + z_score * 0.13))
-    accuracy = min(0.97, max(0.58, 0.70 + level * 0.025))
-    attempts = max(target_points + 3, round(expected_points / accuracy) + 3)
-    interval = duration_seconds / attempts
-    points = 0
-    events: list[ScoreEvent] = []
-    for attempt in range(1, attempts + 1):
-        # Start visibly instead of making a new race look frozen at zero. Later
-        # attempts remain fallible and level-dependent.
-        correct = attempt == 1 or (attempt != attempts // 2 and rng.random() < accuracy)
-        points = max(0, points + (1 if correct else -1))
-        wobble = rng.uniform(0.72, 1.28) if variable else 1.0
-        event_time = (
-            min(1.5, interval)
-            if attempt == 1 and variable
-            else min(duration_seconds, attempt * interval * wobble)
+    events = tuple(
+        ScoreEvent(
+            item.event.elapsed_seconds or 0.0,
+            item.event.kind is RaceEventKind.CORRECT_ANSWER,
+            item.racer.score,
+            task_number=index,
+            event_kind=item.event.kind.value,
+            task_completed=item.event.kind is not RaceEventKind.TIME_ELAPSED,
+            correct_answers=item.racer.correct_answers,
+            completed_tasks=item.racer.completed_tasks,
+            combo=item.racer.streak,
+            end_reason=item.racer.end_reason.value if item.racer.end_reason else None,
         )
-        events.append(ScoreEvent(event_time, correct, points))
-    events.sort(key=lambda event: event.elapsed_seconds)
-    # Recalculate the visible score after sorting jittered events.
-    normalized: list[ScoreEvent] = []
-    points = 0
-    for event in events:
-        points = max(0, points + (1 if event.correct else -1))
-        correct_count = sum(item.correct for item in normalized) + int(event.correct)
-        combo = (
-            (normalized[-1].combo or 0) + 1
-            if event.correct and normalized
-            else int(event.correct)
-        )
-        normalized.append(
-            ScoreEvent(
-                event.elapsed_seconds,
-                event.correct,
-                points,
-                task_number=len(normalized) + 1,
-                event_kind=(
-                    RaceEventKind.CORRECT_ANSWER.value
-                    if event.correct
-                    else RaceEventKind.WRONG_ANSWER.value
-                ),
-                task_completed=True,
-                correct_answers=correct_count,
-                completed_tasks=len(normalized) + 1,
-                combo=combo,
-            )
-        )
-    correct_count = sum(event.correct for event in normalized)
+        for index, item in enumerate(simulation.events, 1)
+    )
+    racer = simulation.state.racers[0]
+    answer_events = [
+        event for event in events if event.event_kind != RaceEventKind.TIME_ELAPSED.value
+    ]
     statistic = RoundStatistic(
         player_id=0,
         game_id="computer",
         game_name="Computergegner",
         definition_hash=definition_hash,
-        correct=correct_count,
-        total=len(normalized),
-        elapsed_seconds=duration_seconds,
-        events=tuple(normalized),
-        score_value=points,
+        correct=racer.correct_answers,
+        total=max(1, len(answer_events)),
+        elapsed_seconds=racer.elapsed_seconds,
+        events=events,
+        score_value=racer.score,
     )
     computer_icons = ("🤖", "👾", "🦾", "🧠", "⚙️")
     return RaceCompetitor(
@@ -280,9 +242,7 @@ class StatisticsRepository:
                     statistic.total,
                     statistic.elapsed_seconds,
                     statistic.played_at,
-                    json.dumps(
-                        [event.as_dict() for event in statistic.events]
-                    ),
+                    json.dumps([event.as_dict() for event in statistic.events]),
                     statistic.score_value,
                     statistic.event_schema_version,
                 ),
@@ -348,8 +308,7 @@ class StatisticsRepository:
                     elapsed_seconds=float(row["elapsed_seconds"]),
                     played_at=str(row["played_at"]),
                     events=tuple(
-                        ScoreEvent.from_dict(event)
-                        for event in json.loads(str(row["events_json"]))
+                        ScoreEvent.from_dict(event) for event in json.loads(str(row["events_json"]))
                     ),
                     score_value=(None if row["score_value"] is None else int(row["score_value"])),
                     event_schema_version=int(row["event_schema_version"]),

@@ -1291,6 +1291,10 @@ class MathAdventureApp:
                 if selected_source == "recorded":
                     competitors = recorded[:count]
                 else:
+                    if availability.config is None:
+                        raise ValueError(
+                            availability.reason or "Diese Rennart ist nicht verfügbar."
+                        )
                     selected_levels = parse_race_levels(levels.value or "")
                     if selected_source == "computer_history" and own_summary is None:
                         raise ValueError("Für diesen Gegner fehlt noch eine eigene Runde.")
@@ -1299,22 +1303,11 @@ class MathAdventureApp:
                         if selected_source == "computer_history" and own_summary
                         else None
                     )
-                    # A five-minute preset must not leave a short target race parked
-                    # at zero for many seconds. Computer pacing follows the chosen
-                    # target (about three seconds per point), capped by the game's
-                    # official duration for comparability.
-                    target_duration = max(30, target_points * 3)
-                    duration = float(
-                        min(game.duration_seconds, target_duration)
-                        if game.duration_seconds
-                        else target_duration
-                    )
                     competitors = [
                         computer_competitor(
                             game.definition_hash(),
+                            availability.config,
                             level=computer_level,
-                            target_points=target_points,
-                            duration_seconds=duration,
                             baseline_points=baseline,
                             seed=index + target_points,
                             variable=bool(variable.value),
@@ -1694,9 +1687,7 @@ class MathAdventureApp:
                 correct=correct,
                 points_after=points,
                 task_number=(
-                    session.task_number
-                    if session is not None
-                    else len(self.live_score_events) + 1
+                    session.task_number if session is not None else len(self.live_score_events) + 1
                 ),
                 event_kind=(
                     RaceEventKind.CORRECT_ANSWER.value

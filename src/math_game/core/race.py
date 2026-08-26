@@ -44,6 +44,7 @@ class RaceConfig:
     duration_seconds: float | None = None
     combo_target: int | None = None
     wrong_answer_penalty: int = 0
+    task_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         supplied = {
@@ -70,6 +71,8 @@ class RaceConfig:
             raise ValueError("race targets must be positive")
         if self.wrong_answer_penalty > 0:
             raise ValueError("wrong_answer_penalty must be zero or negative")
+        if self.task_timeout_seconds is not None and self.task_timeout_seconds <= 0:
+            raise ValueError("task_timeout_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +150,15 @@ def race_config_for_game(game: DefinedGame) -> RaceAvailability:
     try:
         if game.mode in {GameMode.FIXED_TASKS, GameMode.TASK_SPRINT, GameMode.ACCURACY}:
             return RaceAvailability(True, RaceConfig(RaceKind.TASKS, task_target=game.task_count))
+        if game.mode is GameMode.PER_TASK_TIMER:
+            return RaceAvailability(
+                True,
+                RaceConfig(
+                    RaceKind.TASKS,
+                    task_target=game.task_count,
+                    task_timeout_seconds=game.per_task_seconds,
+                ),
+            )
         if game.mode is GameMode.TARGET_HUNT:
             return RaceAvailability(
                 True, RaceConfig(RaceKind.CORRECT_ANSWERS, correct_target=game.correct_target)
@@ -163,6 +175,10 @@ def race_config_for_game(game: DefinedGame) -> RaceAvailability:
         if game.mode is GameMode.PERFECT_RUN:
             return RaceAvailability(
                 True, RaceConfig(RaceKind.PERFECT, correct_target=game.correct_target)
+            )
+        if game.mode is GameMode.COMBO:
+            return RaceAvailability(
+                True, RaceConfig(RaceKind.COMBO, combo_target=game.correct_target)
             )
     except ValueError as error:
         return RaceAvailability(False, reason=f"Ungültige Rennkonfiguration: {error}")
