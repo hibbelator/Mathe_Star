@@ -194,11 +194,10 @@ def test_race_uses_requested_number_of_best_runs_from_identical_game(tmp_path: P
 
 
 def test_computer_rival_is_fallible_repeatable_and_level_scaled() -> None:
-    easy = computer_competitor("sha256:a", level=1, target_points=20, duration_seconds=60, seed=4)
-    hard = computer_competitor("sha256:a", level=10, target_points=20, duration_seconds=60, seed=4)
-    repeated = computer_competitor(
-        "sha256:a", level=10, target_points=20, duration_seconds=60, seed=4
-    )
+    race = RaceConfig(RaceKind.TASKS, task_target=20)
+    easy = computer_competitor("sha256:a", race, level=1, seed=4)
+    hard = computer_competitor("sha256:a", race, level=10, seed=4)
+    repeated = computer_competitor("sha256:a", race, level=10, seed=4)
 
     assert easy.player_name.endswith("P10%")
     assert hard.player_name.endswith("P90%")
@@ -210,9 +209,8 @@ def test_computer_rival_is_fallible_repeatable_and_level_scaled() -> None:
 def test_linear_computer_rival_has_regular_event_intervals() -> None:
     rival = computer_competitor(
         "sha256:a",
+        RaceConfig(RaceKind.TASKS, task_target=10),
         level=5,
-        target_points=10,
-        duration_seconds=30,
         variable=False,
     )
     times = [event.elapsed_seconds for event in rival.statistic.events]
