@@ -524,6 +524,26 @@ def test_resize_updates_mounted_shell_without_full_render() -> None:
     assert updates == ["updated"]
 
 
+def test_players_view_stages_file_picker_until_old_page_is_cleaned() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    pending: list[object] = []
+
+    def no_players() -> list[object]:
+        return []
+
+    dynamic_app.page = SimpleNamespace(width=390, overlay=[])
+    dynamic_app.pending_overlay_controls = pending
+    dynamic_app.player_error = ""
+    dynamic_app.players = SimpleNamespace(all=no_players)
+
+    dynamic_app._players_view()
+
+    assert dynamic_app.page.overlay == []
+    assert len(pending) == 1
+    assert type(pending[0]).__name__ == "FilePicker"
+
+
 def test_recording_end_is_not_presented_as_finish_line() -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
@@ -601,7 +621,9 @@ def test_finished_render_cancels_ghost_task_and_auto_advance_timer() -> None:
     def add_control(_: object) -> None:
         return None
 
-    dynamic_app.page = SimpleNamespace(clean=lambda: None, add=add_control, update=lambda: None)
+    dynamic_app.page = SimpleNamespace(
+        clean=lambda: None, add=add_control, update=lambda: None, overlay=[]
+    )
     dynamic_app._finished_view = lambda: SimpleNamespace()
 
     dynamic_app.render()

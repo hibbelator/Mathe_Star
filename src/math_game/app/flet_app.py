@@ -148,6 +148,7 @@ class MathAdventureApp:
         self.task_feedback: ft.Container | None = None
         self.task_action: ft.ElevatedButton | None = None
         self.root_container: ft.Container | None = None
+        self.pending_overlay_controls: list[ft.Control] = []
         self.round_started_at = 0.0
         self.statistic_saved = False
         self.editor_fields: dict[str, ft.TextField | ft.Dropdown] = {}
@@ -182,6 +183,7 @@ class MathAdventureApp:
         # recurring race callback first; a live task schedules exactly one new
         # callback below, while a finished round deliberately schedules none.
         self._cancel_ghost_tick()
+        self.pending_overlay_controls = []
         if self.special_mode is not None:
             content = self._special_mode_view()
         elif self.session is not None and self.session.phase not in {
@@ -213,6 +215,10 @@ class MathAdventureApp:
         # Build the complete replacement before clearing the current page. If
         # constructing a view fails, the last usable menu remains visible.
         self.page.clean()
+        # Some views need non-visual controls such as FilePicker in the page
+        # overlay. Attach them only after clean(): adding them while the old
+        # page is still mounted would make clean() immediately detach them.
+        self.page.overlay.extend(self.pending_overlay_controls)
         self.root_container = root_container
         self.page.add(root_container)
         self.page.update()
@@ -489,7 +495,10 @@ class MathAdventureApp:
             image.update()
 
         picker = ft.FilePicker(on_result=selected)
-        self.page.overlay.append(picker)
+        # render() must first clean the previous page and only then attach this
+        # non-visual control. Otherwise Flet removes the freshly created picker
+        # during the same navigation event and can abort the player view update.
+        self.pending_overlay_controls.append(picker)
         icon = ft.Dropdown(
             label="Spielericon",
             value="🙂",
