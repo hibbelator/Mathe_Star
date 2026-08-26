@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import asdict, dataclass
 
 import flet as ft
@@ -98,7 +100,8 @@ class MathAdventureApp:
         self.answer_field: ft.TextField | None = None
         self.auto_advance_timer: threading.Timer | None = None
         self.special_deadline_timer: threading.Timer | None = None
-        self.ghost_tick_timer: threading.Timer | None = None
+        self.ghost_tick_task: Future[None] | None = None
+        self.ghost_tick_generation = 0
         self.race_live_panel: ft.Container | None = None
         self.dialog_open = False
         self.dialog_paused_at = 0.0
@@ -1975,21 +1978,29 @@ class MathAdventureApp:
             self.auto_advance_timer = None
 
     def _schedule_ghost_tick(self) -> None:
-        self._cancel_ghost_tick()
-        self.ghost_tick_timer = threading.Timer(0.5, self._ghost_tick)
-        self.ghost_tick_timer.start()
+        """Start one Flet-owned live-update loop for the current race view."""
 
-    def _ghost_tick(self) -> None:
-        self.ghost_tick_timer = None
-        if (
+        self._cancel_ghost_tick()
+        generation = self.ghost_tick_generation
+        self.ghost_tick_task = self.page.run_task(self._ghost_tick, generation)
+
+    async def _ghost_tick(self, generation: int) -> None:
+        """Refresh the race panel until this particular loop becomes obsolete."""
+
+        while generation == self.ghost_tick_generation:
+            await asyncio.sleep(0.5)
+            if generation != self.ghost_tick_generation or not self._race_tick_is_active():
+                return
+            self._refresh_race_panel()
+
+    def _race_tick_is_active(self) -> bool:
+        return (
             not self.dialog_open
             and self.race_state is not None
             and self.session is not None
             and self.session.phase is RoundPhase.TASK
             and self.race_live_panel is not None
-        ):
-            self._refresh_race_panel()
-            self._schedule_ghost_tick()
+        )
 
     def _refresh_race_panel(self) -> None:
         """Refresh positions immediately while retaining the rest of the task UI."""
@@ -2001,9 +2012,12 @@ class MathAdventureApp:
         self.race_live_panel.update()
 
     def _cancel_ghost_tick(self) -> None:
-        if self.ghost_tick_timer is not None:
-            self.ghost_tick_timer.cancel()
-            self.ghost_tick_timer = None
+        # Incrementing first also invalidates a coroutine which is just waking
+        # up and cannot be cancelled before it next gets CPU time.
+        self.ghost_tick_generation += 1
+        if self.ghost_tick_task is not None:
+            self.ghost_tick_task.cancel()
+            self.ghost_tick_task = None
 
     def _on_keyboard(self, event: ft.KeyboardEvent) -> None:
         if (

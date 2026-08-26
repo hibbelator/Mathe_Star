@@ -1,3 +1,4 @@
+import asyncio
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -81,13 +82,13 @@ def test_time_race_uses_elapsed_progress_and_never_calls_timeout_a_finish_line()
     assert dynamic_app._standing_status(state.standings[0]) == "Zeit abgelaufen"
 
 
-def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
+def test_race_tick_updates_only_live_panel_and_keeps_answer_field(monkeypatch: Any) -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
     answer_field = SimpleNamespace(value="17")
     panel = SimpleNamespace(content="old", update_calls=0)
     panel.update = lambda: setattr(panel, "update_calls", panel.update_calls + 1)
-    dynamic_app.ghost_tick_timer = object()
+    dynamic_app.ghost_tick_generation = 4
     dynamic_app.dialog_open = False
     dynamic_app.race_state = object()
     # A visible correct/wrong feedback must not stop the recurring race clock.
@@ -95,14 +96,119 @@ def test_race_tick_updates_only_live_panel_and_keeps_answer_field() -> None:
     dynamic_app.race_live_panel = panel
     dynamic_app.answer_field = answer_field
     dynamic_app._build_race_panel = lambda: SimpleNamespace(content="new")
-    dynamic_app._schedule_ghost_tick = lambda: None
     dynamic_app.render = lambda: (_ for _ in ()).throw(AssertionError("full render"))
 
-    dynamic_app._ghost_tick()
+    sleeps = [0]
+
+    async def immediate_sleep(_: float) -> None:
+        sleeps[0] += 1
+        if sleeps[0] == 2:
+            dynamic_app.session.phase = RoundPhase.FINISHED
+
+    monkeypatch.setattr("math_game.app.flet_app.asyncio.sleep", immediate_sleep)
+    asyncio.run(dynamic_app._ghost_tick(4))
 
     assert panel.content == "new"
     assert panel.update_calls == 1
     assert answer_field.value == "17"
+
+
+def test_async_race_loop_refreshes_repeatedly_and_replays_opponent_events(
+    monkeypatch: Any,
+) -> None:
+    """The clock, rather than answer submissions, drives several live frames."""
+
+    now = [0.0]
+    sleeps = [0]
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.ghost_tick_generation = 7
+    dynamic_app.dialog_open = False
+    dynamic_app.round_started_at = 0.0
+    dynamic_app.race_state = SimpleNamespace(
+        config=RaceConfig(RaceKind.TASKS, task_target=3)
+    )
+    dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK)
+    dynamic_app.race_live_panel = SimpleNamespace()
+    opponent_events = [ScoreEvent(1.0, True, 1, task_completed=True)]
+    visible_progress: list[int] = []
+
+    def unexpected_submit(_: object) -> None:
+        raise AssertionError("tick submitted an answer")
+
+    dynamic_app._on_submit_clicked = unexpected_submit
+
+    def refresh() -> None:
+        snapshot = dynamic_app._race_snapshot(
+            [("player", "Du", "", ""), ("ghost", "Mia", "", "")],
+            [[], opponent_events],
+            now[0],
+        )
+        opponent = next(item for item in snapshot.standings if item.racer_id == "ghost")
+        visible_progress.append(opponent.completed_tasks)
+
+    async def controlled_sleep(seconds: float) -> None:
+        assert seconds == 0.5
+        now[0] += seconds
+        sleeps[0] += 1
+        if sleeps[0] == 4:
+            dynamic_app.session.phase = RoundPhase.FINISHED
+
+    dynamic_app._refresh_race_panel = refresh
+    monkeypatch.setattr("math_game.app.flet_app.asyncio.sleep", controlled_sleep)
+    monkeypatch.setattr("math_game.app.flet_app.time.monotonic", lambda: now[0])
+
+    asyncio.run(dynamic_app._ghost_tick(7))
+
+    assert visible_progress == [0, 1, 1]
+
+
+def test_race_task_is_cancelled_for_dialog_and_navigation_then_rescheduled() -> None:
+    class FakeTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    scheduled: list[tuple[object, int]] = []
+    tasks: list[FakeTask] = []
+
+    def run_task(handler: object, generation: int) -> FakeTask:
+        scheduled.append((handler, generation))
+        task = FakeTask()
+        tasks.append(task)
+        return task
+
+    dynamic_app.page = SimpleNamespace(run_task=run_task)
+    dynamic_app.ghost_tick_task = None
+    dynamic_app.ghost_tick_generation = 0
+    dynamic_app.dialog_open = False
+    dynamic_app.dialog_paused_at = 0.0
+    dynamic_app.round_started_at = time.monotonic()
+    dynamic_app.race_state = object()
+    dynamic_app.session = SimpleNamespace(phase=RoundPhase.TASK, feedback=None)
+    dynamic_app.special_mode = None
+    dynamic_app.special_deadline_timer = None
+    dynamic_app.auto_advance_timer = None
+    dynamic_app._cancel_special_deadline = lambda: None
+    dynamic_app.render = lambda: None
+
+    dynamic_app._schedule_ghost_tick()
+    first_generation = scheduled[-1][1]
+    dynamic_app._pause_for_dialog()
+    assert tasks[0].cancelled
+
+    dynamic_app._resume_after_dialog()
+    assert scheduled[-1][1] > first_generation
+    resumed_task = tasks[-1]
+
+    dynamic_app._navigate("menu")
+    assert resumed_task.cancelled
+    assert dynamic_app.ghost_tick_task is None
+    assert dynamic_app.ghost_tick_generation > scheduled[-1][1]
 
 
 def test_race_levels_accept_ranges_and_individual_runners() -> None:
@@ -381,7 +487,7 @@ def test_dialog_pause_excludes_time_from_player_and_opponent_progress(monkeypatc
     ]
 
 
-def test_finished_render_cancels_ghost_and_auto_advance_timers() -> None:
+def test_finished_render_cancels_ghost_task_and_auto_advance_timer() -> None:
     class FakeTimer:
         def __init__(self) -> None:
             self.cancelled = False
@@ -392,7 +498,8 @@ def test_finished_render_cancels_ghost_and_auto_advance_timers() -> None:
     app = MathAdventureApp.__new__(MathAdventureApp)
     dynamic_app: Any = app
     ghost, advance = FakeTimer(), FakeTimer()
-    dynamic_app.ghost_tick_timer = ghost
+    dynamic_app.ghost_tick_task = ghost
+    dynamic_app.ghost_tick_generation = 2
     dynamic_app.auto_advance_timer = advance
     dynamic_app.special_mode = None
     dynamic_app.session = SimpleNamespace(phase=RoundPhase.FINISHED)
@@ -412,5 +519,6 @@ def test_finished_render_cancels_ghost_and_auto_advance_timers() -> None:
     dynamic_app.render()
 
     assert ghost.cancelled and advance.cancelled
-    assert dynamic_app.ghost_tick_timer is None
+    assert dynamic_app.ghost_tick_task is None
+    assert dynamic_app.ghost_tick_generation == 3
     assert dynamic_app.auto_advance_timer is None
