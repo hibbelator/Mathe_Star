@@ -900,6 +900,10 @@ class MathAdventureApp:
             self._race_track(name, player_icon, vehicle, standings[racer_id], racer_id == "player")
             for racer_id, name, player_icon, vehicle in identities
         ]
+        race_metrics = [
+            self._race_metric(name, player_icon, standings[racer_id], racer_id == "player")
+            for racer_id, name, player_icon, _ in identities
+        ]
         return ft.Container(
             padding=16,
             bgcolor="#F3F0FF",
@@ -921,7 +925,12 @@ class MathAdventureApp:
                         ],
                     ),
                     ft.Text("Fortschritt und Rang folgen der jeweiligen Rennregel.", color=MUTED),
-                    *tracks,
+                    # Keep the moving racers together as one compact visual field.  The
+                    # textual details live in their own block below and therefore no
+                    # longer create a large gap between two neighbouring tracks.
+                    ft.Column(spacing=1, controls=tracks),
+                    ft.Text("RENNDATEN", size=12, color=MUTED, weight=ft.FontWeight.BOLD),
+                    ft.Column(spacing=2, controls=race_metrics),
                 ],
             ),
         )
@@ -939,45 +948,63 @@ class MathAdventureApp:
         progress = standing.progress
         track_width = layout_metrics(getattr(self.page, "width", None)).track_width
         vehicle_left = round(progress * (track_width - 35))
-        return ft.Container(
-            padding=8,
-            bgcolor="#FFFFFF" if is_player else "#FAFAFF",
-            border_radius=12,
-            border=ft.border.all(2 if is_player else 1, PRIMARY if is_player else "#DDD8F5"),
-            content=ft.Column(
-                spacing=3,
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Text(player_icon, size=22),
-                            ft.Text(name, expand=True, weight=ft.FontWeight.BOLD),
-                            ft.Text(
-                                f"Platz {standing.rank} · {self._standing_status(standing)} · "
-                                f"{self._standing_detail(self.race_state.config, standing)}",
-                                size=11,
-                                color=MUTED,
-                            ),
-                        ]
-                    ),
-                    ft.Stack(
-                        width=track_width,
-                        height=34,
-                        controls=[
-                            ft.Container(
-                                top=15,
-                                width=track_width,
-                                height=5,
-                                bgcolor="#DED9F8",
-                                border_radius=4,
-                            ),
-                            ft.Text("🏁", right=0, top=2, size=24),
-                            ft.Container(
-                                left=vehicle_left, top=0, content=ft.Text(vehicle, size=27)
-                            ),
-                        ],
-                    ),
-                ],
-            ),
+        return ft.Column(
+            spacing=0,
+            controls=[
+                ft.Row(
+                    height=18,
+                    spacing=4,
+                    controls=[
+                        ft.Text(player_icon, size=15),
+                        ft.Text(
+                            name,
+                            size=11,
+                            color=PRIMARY if is_player else None,
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                    ],
+                ),
+                ft.Stack(
+                    width=track_width,
+                    height=28,
+                    controls=[
+                        ft.Container(
+                            top=12,
+                            width=track_width,
+                            height=4,
+                            bgcolor=PRIMARY if is_player else "#DED9F8",
+                            border_radius=4,
+                        ),
+                        ft.Text("🏁", right=0, top=0, size=21),
+                        ft.Container(
+                            left=vehicle_left, top=0, content=ft.Text(vehicle, size=23)
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def _race_metric(
+        self, name: str, player_icon: str, standing: RaceStanding, is_player: bool
+    ) -> ft.Control:
+        """Render one racer's ranking and rule-specific values below all tracks."""
+
+        if self.race_state is None:
+            raise RuntimeError("race metrics require a configured race")
+        return ft.Row(
+            height=22,
+            spacing=5,
+            controls=[
+                ft.Text(player_icon, size=14),
+                ft.Text(name, width=54, size=11, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    f"Platz {standing.rank} · {self._standing_status(standing)} · "
+                    f"{self._standing_detail(self.race_state.config, standing)}",
+                    expand=True,
+                    size=10,
+                    color=PRIMARY if is_player else MUTED,
+                ),
+            ],
         )
 
     def _race_snapshot(

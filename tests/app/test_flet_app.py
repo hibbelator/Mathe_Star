@@ -156,6 +156,41 @@ def test_race_tick_updates_only_live_panel_and_keeps_answer_field(monkeypatch: A
     assert answer_field.value == "17"
 
 
+def test_race_panel_groups_all_tracks_before_the_separate_metrics_block() -> None:
+    app = MathAdventureApp.__new__(MathAdventureApp)
+    dynamic_app: Any = app
+    dynamic_app.page = SimpleNamespace(width=390)
+    dynamic_app.active_player = SimpleNamespace(name="Lina", icon="🙂")
+    dynamic_app.round_started_at = time.monotonic()
+    dynamic_app.live_score_events = []
+    dynamic_app.race_state = SimpleNamespace(
+        config=RaceConfig(RaceKind.TASKS, task_target=10),
+        vehicle="🚀",
+        competitors=[
+            SimpleNamespace(
+                player_name="Mia",
+                player_icon="🐯",
+                statistic=SimpleNamespace(events=[]),
+            )
+        ],
+    )
+
+    panel = dynamic_app._build_race_panel()
+    panel_controls = panel.content.controls
+    track_block = panel_controls[2]
+    metrics_title = panel_controls[3]
+    metrics_block = panel_controls[4]
+
+    assert track_block.spacing == 1
+    assert len(track_block.controls) == 2
+    assert metrics_title.value == "RENNDATEN"
+    assert len(metrics_block.controls) == 2
+    # Track headers contain only icon and name; ranking/details are kept below.
+    assert all(len(track.controls[0].controls) == 2 for track in track_block.controls)
+    assert all(not hasattr(track, "border") for track in track_block.controls)
+    assert all(not hasattr(metric, "border") for metric in metrics_block.controls)
+
+
 def test_async_race_loop_refreshes_repeatedly_and_replays_opponent_events(
     monkeypatch: Any,
 ) -> None:

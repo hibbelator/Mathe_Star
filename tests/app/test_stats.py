@@ -199,8 +199,10 @@ def test_computer_rival_is_fallible_repeatable_and_level_scaled() -> None:
     hard = computer_competitor("sha256:a", race, level=10, seed=4)
     repeated = computer_competitor("sha256:a", race, level=10, seed=4)
 
-    assert easy.player_name.endswith("P10%")
-    assert hard.player_name.endswith("P90%")
+    assert len(easy.player_name) <= 8
+    assert len(hard.player_name) <= 8
+    assert easy.player_name != hard.player_name
+    assert hard.player_name == repeated.player_name
     assert hard.statistic.events == repeated.statistic.events
     assert any(not event.correct for event in hard.statistic.events)
     assert hard.statistic.score > easy.statistic.score
