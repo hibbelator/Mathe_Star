@@ -154,7 +154,6 @@ def computer_competitor(
 
     del baseline_points  # Kept as a source-selection compatibility hint for the UI.
     simulation = simulate_race(race, level=level, seed=seed, variable=variable)
-    percentile = 0.10 + (level - 1) * (0.80 / 9)
     events = tuple(
         ScoreEvent(
             item.event.elapsed_seconds or 0.0,
@@ -186,8 +185,32 @@ def computer_competitor(
         score_value=racer.score,
     )
     computer_icons = ("🤖", "👾", "🦾", "🧠", "⚙️")
+    # A seed produces the same opponent on every replay, while different race
+    # slots still feel like a small, varied field.  Keep these labels deliberately
+    # short: technical descriptions such as percentile and level belong in the
+    # setup dialog, not beside the moving racer on a phone-sized track.
+    computer_names = (
+        "Nova",
+        "Keks",
+        "Momo",
+        "Blitz",
+        "Pixel",
+        "Zora",
+        "Fips",
+        "Loki",
+        "Pico",
+        "Trix",
+        "Nino",
+        "Flitz",
+        "Juno",
+        "Puck",
+        "Roxy",
+        "Mika",
+        "Turbo",
+    )
+    computer_name = computer_names[(seed * 5 + level * 3) % len(computer_names)]
     return RaceCompetitor(
-        f"Computer · Stufe {level} · P{percentile:.0%}",
+        computer_name,
         statistic,
         computer_icons[(level - 1) % len(computer_icons)],
     )
